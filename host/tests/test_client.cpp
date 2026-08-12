@@ -103,7 +103,7 @@ struct Rig {
     htk::MemTransport *mem = nullptr;
     htk::Client client;
 
-    void start(htk::Client::Options opts = {})
+    void start(htk::Client::Options opts = htk::Client::Options())
     {
         auto t = std::unique_ptr<htk::MemTransport>(new htk::MemTransport);
         mem = t.get();

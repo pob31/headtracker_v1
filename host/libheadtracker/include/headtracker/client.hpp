@@ -111,10 +111,13 @@ public:
 
     /* Starts the reader thread. `target` is a port path, or empty to
      * auto-discover. Returns false only if a thread is already running. */
-    bool start(std::unique_ptr<Transport> transport, std::string target, Options opts = {});
+    /* Spelled `Options()` rather than `{}`: GCC rejects a brace-init default
+     * argument for a nested aggregate declared in the same class. */
+    bool start(std::unique_ptr<Transport> transport, std::string target,
+               Options opts = Options());
 
     /* Convenience: a real serial port, auto-discovered when target is empty. */
-    bool start(std::string target = {}, Options opts = {});
+    bool start(std::string target = std::string(), Options opts = Options());
 
     /* Signals the reader thread and joins it. Safe to call twice, and safe to
      * call from a callback's thread only AFTER returning from the callback.

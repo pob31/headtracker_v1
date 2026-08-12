@@ -19,7 +19,11 @@
 #include "headtracker/parser.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
 #include <chrono>
+#include <climits>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -37,6 +41,14 @@
 #include <setupapi.h>
 #include <fcntl.h>
 #include <io.h>
+#if defined(_MSC_VER)
+/* Declare the dependency here rather than relying on every consumer's build
+ * system to add it. Projucer-based consumers in particular have no reliable
+ * place to put it, and a missing setupapi is a link error a long way from its
+ * cause. The CMake target links it too, for MinGW and for static analysis. */
+#pragma comment(lib, "setupapi.lib")
+#pragma comment(lib, "advapi32.lib")
+#endif
 #else
 #include <dirent.h>
 #include <fcntl.h>
