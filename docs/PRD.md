@@ -41,14 +41,15 @@ The full wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 |---|-------------|
 | F1 | Stream head orientation as unit quaternions with sequence number and device timestamp. |
 | F2 | Default update rate ~208 Hz; host-settable via `SET_RATE`. IMU sampled at 416 Hz so transmitted samples are at most ~2.4 ms old at capture. |
-| F3 | **Recenter**: client-library function zeroes the yaw reference (current heading becomes "front"); pitch/roll remain gravity-referenced. Per-listener by design — it never touches sensor state, so each receiver/app keeps its own reference. |
+| F3 | **Recenter + boresight**: client-library functions. Recenter zeroes the yaw reference (current heading becomes "front"); boresight captures the full pose to absorb the sensor's mounting angle — essential when the same sensor is quickly re-clipped to different headphones/headbands. Per-listener by design — neither touches sensor state, so each receiver/app keeps its own references. |
 | F4 | **Raw mode**: stream raw gyro/accel samples — for fusion tuning, and to allow fusion to run receiver-side instead of on the head unit (see §computation placement). |
 | F5 | **Simulator mode**: dongle can emit synthetic orientation data on command, so host software can be developed and tested with no head unit (or no radio link) present. |
-| F6 | Link health surfaced to the host: per-tracker packet-loss counts (sequence gaps, as seen by that receiver), update rate, battery voltage, at ≥1 Hz. |
+| F6 | Link health surfaced to the host: per-tracker packet-loss counts (sequence gaps, as seen by that receiver), update rate, battery voltage, and firmware version (to spot stale units in a mixed fleet), at ≥1 Hz. |
 | F7 | Version/identity handshake so client apps can check protocol compatibility. |
 | F8 | **Multi-tracker, pairing-free**: a dongle receives every head unit in range (2–4 concurrent at full rate) and multiplexes them all onto the USB stream, tagged with a stable per-device hardware ID. The application lists available trackers and the user selects in-app — no pairing when a battery dies or headphones are swapped. |
 | F9 | **Multi-receiver broadcast**: any number of dongles listen simultaneously; all see all trackers, passively and independently. Consequence: sensor-directed commands (fusion reset, rate, mode) are always addressed to one specific tracker ID — a state change is visible to every receiver, so nothing mutates sensor state anonymously or broadcast-wide. |
 | F10 | **Auto standby**: head units stream only while at least one receiver's presence beacon has been heard recently; otherwise they drop to a µA-level standby, probing for beacons at low duty cycle (optionally deeper sleep when also motionless, via the IMU's wake-on-motion). Recovery when a receiver appears: seconds. |
+| F11 | **Findable, self-explaining units**: an addressed `IDENTIFY` command flashes a tracker's LED white so a physical unit can be matched to its list entry. The head unit's RGB LED speaks a small state language: green blink = streaming, slow amber = no receiver heard, red = low battery, white = identify. |
 
 ### Performance
 

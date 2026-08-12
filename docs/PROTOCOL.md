@@ -1,6 +1,6 @@
 # Head Tracker Protocol Specification
 
-**Protocol version:** 1 · **Spec status:** draft v0.3 (frozen at milestone M6) · 2026-08-12
+**Protocol version:** 1 · **Spec status:** draft v0.4 (frozen at milestone M6) · 2026-08-12
 
 This document specifies two wire formats:
 
@@ -129,7 +129,7 @@ consumers filter by `id`.
 
 Sent at 1 Hz, and immediately in response to `GET_STATS`.
 
-#### `0x05 TRACKER_STAT` — per-tracker health (17 bytes)
+#### `0x05 TRACKER_STAT` — per-tracker health (20 bytes)
 
 | offset | field | type | description |
 |---|---|---|---|
@@ -139,8 +139,11 @@ Sent at 1 Hz, and immediately in response to `GET_STATS`.
 | 7 | rate | u16 | packets/s from this tracker over the last second, as seen here |
 | 9 | seq_lost | u32 | cumulative lost packets (sequence gaps) since dongle boot, as seen here |
 | 13 | vbat_mV | u16 | head-unit battery voltage (self-reported), 0 if unknown |
-| 15 | mode | u8 | tracker's current mode (0 = quat, 1 = raw, 2 = both, self-reported) |
-| 16 | flags | u8 | bit 0 `LINK_UP` (packet within last 500 ms) · rest 0 |
+| 15 | fw_major | u8 | head-unit firmware version (self-reported) — lets a lab spot stale units in a mixed fleet |
+| 16 | fw_minor | u8 | |
+| 17 | fw_patch | u8 | |
+| 18 | mode | u8 | tracker's current mode (0 = quat, 1 = raw, 2 = both, self-reported) |
+| 19 | flags | u8 | bit 0 `LINK_UP` (packet within last 500 ms) · rest 0 |
 
 Sent at 1 Hz **per known tracker**, and after `GET_STATS`. This is the packet an
 application uses to build its tracker list: any `id` seen here (or in ORIENT) is
@@ -201,6 +204,7 @@ each must name one specific target: `id` MUST be a concrete tracker ID (`0x0000`
 | `0x12` | SET_RATE | id:u16, hz:u16 | target clamps to nearest supported rate (52/104/208/416); actual rate observable via `TRACKER_STAT.rate` |
 | `0x13` | SET_MODE | id:u16, mode:u8 (0 = quat, 1 = raw, 2 = both) | target switches streamed packet types |
 | `0x14` | GET_STATS | — | dongle sends `STATUS` + one `TRACKER_STAT` per tracker immediately |
+| `0x15` | IDENTIFY | id:u16 | target flashes its LED white for ~3 s, so a physical unit can be matched to a list entry. No effect on streaming (harmless to repeat, like all commands) |
 | `0x1F` | SIM_MODE | on:u8 (0/1) | dongle-local: emit synthetic ORIENT as tracker `0xFFFF` (slow yaw sweep, `SIM` flag set), alongside any real trackers |
 
 **Delivery semantics:** sensor-directed commands are carried inside the dongle's presence
@@ -215,20 +219,31 @@ standby are carried for a few beacon repetitions and then expire — re-issue af
 `TRACKER_STAT` shows `LINK_UP` again. With multiple receivers, nothing prevents two hosts
 from configuring the same tracker; last command wins.
 
-### 1.6 Recentering (client-side, not a wire command)
+### 1.6 Recentering and boresight (client-side, not wire commands)
 
-"Recenter" defines the listener's "front"; it is per-listener state, so it lives in the
-receiver's client library, not on the sensor:
+Both operations define the listener's reference frame; they are per-listener state, so
+they live in the receiver's client library, not on the sensor. Both follow the same
+pattern — capture a reference `q_ref` on the user's action, then output
+`q' = q_ref⁻¹ ⊗ q` for every subsequent sample `q` from that tracker — and differ only
+in what is captured:
 
-1. On the user's recenter action, capture the current sample's quaternion `q_c`.
-2. Extract its heading (rotation about world Z): `q_ref = heading(q_c)`
-   — i.e. the unit quaternion `(w, 0, 0, z)/‖(w, 0, 0, z)‖` built from `q_c`'s w and z
-   components (yaw-only, keeps gravity untouched).
-3. Output `q' = q_ref⁻¹ ⊗ q` for every subsequent sample `q` from that tracker.
+- **Recenter (yaw-only)**: `q_ref = heading(q_c)` — the unit quaternion
+  `(w, 0, 0, z)/‖(w, 0, 0, z)‖` built from the current sample `q_c`'s w and z components.
+  Zeroes "front" while keeping pitch/roll gravity-referenced. This is the routine
+  correction for 6DoF yaw drift.
+- **Boresight (full-pose tare)**: `q_ref = q_c`, captured while the wearer holds their
+  head level and looks straight ahead. Absorbs the *mounting* orientation — a sensor
+  clipped to a headband or velcroed to an earcup at an arbitrary angle — which yaw-only
+  recentering cannot. Typical flow: boresight once when the sensor is attached to a new
+  rig, recenter as often as wanted afterwards (composing the two references is the
+  library's job).
 
-The reference library implements exactly this; each application (or each machine in a
-future LAN-bridged cluster) keeps its own reference. Sensor yaw origin is arbitrary and
-drifts slowly (6DoF); re-running the procedure re-zeros it at no cost to anyone else.
+Caveat: after a full-pose boresight, "yaw" rotations are about the boresighted vertical,
+which is only as level as the wearer's head was during capture — good enough in practice,
+and repeating the capture is free. The reference library implements both; each
+application (or each machine in a future LAN-bridged cluster) keeps its own references.
+Sensor orientation origin is arbitrary and yaw drifts slowly (6DoF); re-running either
+procedure costs nothing to any other receiver.
 
 ### 1.7 Session behavior
 
@@ -262,6 +277,13 @@ payload+crc : 13 34 12 01 EE 68
 frame       : 07 13 34 12 01 EE 68 00
 ```
 
+**IDENTIFY, tracker `0x1234`** — payload `15 34 12`, CRC16 = `0x9F2D`:
+
+```
+payload+crc : 15 34 12 2D 9F
+frame       : 06 15 34 12 2D 9F 00
+```
+
 **HELLO** (host, proto_ver 1) — payload `10 01`, CRC16 = `0x0E5D`:
 
 ```
@@ -290,11 +312,11 @@ frame       : 05 01 34 12 2A 04 40 42 0F 01 01 03 80 3F 01 01 01 01 01 01 01 01 
 ```
 
 **TRACKER_STAT** — tracker `0x1234`, age 5 ms, 208 pkt/s, 3 lost, vbat 4012 mV,
-mode quat, `LINK_UP`; CRC16 = `0xA744`:
+fw 0.1.0, mode quat, `LINK_UP`; CRC16 = `0xE925`:
 
 ```
-payload     : 05 34 12 05 00 00 00 D0 00 03 00 00 00 AC 0F 00 01
-frame       : 05 05 34 12 05 01 01 02 D0 02 03 01 01 03 AC 0F 04 01 44 A7 00
+payload     : 05 34 12 05 00 00 00 D0 00 03 00 00 00 AC 0F 00 01 00 00 01
+frame       : 05 05 34 12 05 01 01 02 D0 02 03 01 01 03 AC 0F 02 01 01 04 01 25 E9 00
 ```
 
 ### 1.9 Versioning rules
@@ -342,8 +364,8 @@ The dongle's forwarding job is therefore: prepend nothing, append CRC16, COBS-en
 send. Every air payload already carries the tracker `id`.
 
 - `ORIENT` (26 B) and/or `RAW` (22 B) at the active rate, per the tracker's mode.
-- A compact tracker-status payload (vbat, mode, rate, uptime) every second, merged by
-  each dongle into its `TRACKER_STAT` bookkeeping.
+- A compact tracker-status payload (vbat, firmware version, mode, rate, uptime) every
+  second, merged by each dongle into its `TRACKER_STAT` bookkeeping.
 
 ### 2.3 Downlink: receiver beacons (dongle → all head units)
 
