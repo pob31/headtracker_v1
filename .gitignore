@@ -1,0 +1,26 @@
+# Build outputs
+build*/
+host/build*/
+cmake-build-*/
+
+# Zephyr / west
+.west/
+twister-out*/
+
+# Editors / IDE
+.vscode/
+.idea/
+*.user
+
+# OS cruft
+Thumbs.db
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Logs and captures
+*.log
+*.csv
