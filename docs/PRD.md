@@ -40,8 +40,9 @@ The full wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 | F3 | **Recenter**: host command zeroes the yaw reference (current heading becomes "front"). Pitch/roll remain gravity-referenced. Tracker confirms via a flag in the orientation stream. |
 | F4 | **Raw mode**: stream raw gyro/accel samples for fusion tuning and diagnostics. |
 | F5 | **Simulator mode**: dongle can emit synthetic orientation data on command, so host software can be developed and tested with no head unit (or no radio link) present. |
-| F6 | Link health surfaced to the host: packet-loss counts (sequence gaps), ESB retransmit/failure counts, update rate, at ≥1 Hz. |
+| F6 | Link health surfaced to the host: per-tracker packet-loss counts (sequence gaps), ESB retransmit/failure counts, update rate, battery voltage, at ≥1 Hz. |
 | F7 | Version/identity handshake so client apps can check protocol compatibility. |
+| F8 | **Multi-tracker, pairing-free**: the dongle receives every head unit in range (2–4 concurrent at full rate) and multiplexes them all onto the USB stream, tagged with a stable per-device hardware ID. The application lists available trackers and the user selects in-app — no pairing when a battery dies or headphones are swapped. Commands are addressed per tracker (or broadcast). |
 
 ### Performance
 
@@ -65,10 +66,16 @@ The full wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 
 - **Position tracking** — orientation only (3DoF rotation).
 - **Magnetometer / absolute heading** — yaw is relative; recenter defines "front".
-- **Multiple simultaneous trackers** — but the protocol reserves space for tracker IDs.
+- **More than ~4 concurrent trackers at full rate** — the shared-address air protocol
+  degrades gracefully (lower per-tracker rates) but is not designed for crowds.
 - **Battery management / charging UX** — power the head unit however is convenient.
-- **Encryption or pairing** — fixed radio address constants; acceptable for lab/studio use.
+- **Encryption or pairing** — pairing-free is a feature (F8); fixed radio address
+  constants are acceptable for lab/studio use. Two dongles on one channel will see each
+  other's trackers — by design for now.
 - **Configuration persistence** — settings are per-session, re-applied by the host.
+- **LAN distribution in v1** — planned as a host daemon (`htbridge`, milestone M8) that
+  republishes all trackers over UDP for multi-machine render clusters (WFS); additive,
+  requires no protocol changes.
 
 ## 5. Roadmap
 
@@ -82,6 +89,11 @@ The full wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 | M5 | IMU bring-up (raw mode first, then on-target VQF); recenter end-to-end | yes |
 | M6 | Latency measurement + tuning (IRQ priorities, timing); protocol spec finalized v1.0 | yes |
 | M7 | LSM6DSV16X breakout via external I2C; hardware SFLP fusion backend (`hw_fusion` flag) | yes |
+| M8 | `htbridge` LAN daemon: republish all trackers over UDP + discovery, for render clusters | yes |
+
+Multi-tracker (F8) is not a separate milestone: the protocol carries tracker IDs from M1,
+the dongle's tracker table arrives with M4, and a second head unit is just another flash
+of `app_head`.
 
 ## 6. Key technical facts and risks
 
@@ -119,4 +131,6 @@ Wearing the head unit, running `htmon` on any of the three OSes: orientation str
 ≥200 Hz with reported loss <1% at 2 m line-of-sight, recenter works from the host, measured
 motion-to-USB latency ≤5 ms typical, and yaw drift in seated use is slow enough that the
 scene remains stable between occasional recenters. A target application (WFS-DIY) consumes
-the stream via the client library with no device-specific code beyond it.
+the stream via the client library with no device-specific code beyond it. With two head
+units powered, both appear in the tracker list and switching between them in the app is
+immediate, with no pairing step.
