@@ -42,7 +42,7 @@ Client::~Client()
     stop();
 }
 
-bool Client::start(std::unique_ptr<Transport> transport, std::string target, Options opts)
+bool Client::start(std::unique_ptr<Transport> transport, std::string target, ClientOptions opts)
 {
     if (running_.load(std::memory_order_acquire)) {
         return false;
@@ -61,7 +61,7 @@ bool Client::start(std::unique_ptr<Transport> transport, std::string target, Opt
     return true;
 }
 
-bool Client::start(std::string target, Options opts)
+bool Client::start(std::string target, ClientOptions opts)
 {
     return start(make_serial(), std::move(target), opts);
 }

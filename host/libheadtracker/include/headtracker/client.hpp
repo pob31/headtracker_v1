@@ -62,29 +62,34 @@ struct TrackerInfo {
     uint32_t orient_count = 0;
 };
 
+/* Namespace scope, not nested in Client: a default argument spelled
+ * `Options()` cannot reach a nested class's default member initializers before
+ * the enclosing class is complete, which GCC rejects outright. */
+struct ClientOptions {
+    bool auto_reconnect = true;
+    int reconnect_ms = 1000;
+    int reconnect_max_ms = 5000;
+    int read_timeout_ms = 20;
+
+    /* An unplug does not reliably surface as a read error on every OS, so
+     * silence is also treated as death. */
+    int no_data_watchdog_ms = 2000;
+
+    /* Mirror of the dongle's own 30 s rule: it simply stops sending
+     * TRACKER_STAT for a tracker, so the host must expire it. */
+    int tracker_expiry_ms = 30000;
+
+    /* An id is only reported as a tracker once it has been corroborated:
+     * either a TRACKER_STAT, or this many ORIENT frames. A CRC-16 collision is
+     * ~1/65536 per corrupted frame, which over a long show on a noisy link is
+     * roughly one bogus id -- without a gate it would sit in the user's
+     * tracker list for the rest of the session. */
+    uint32_t promote_after_orients = 3;
+};
+
 class Client {
 public:
-    struct Options {
-        bool auto_reconnect = true;
-        int reconnect_ms = 1000;
-        int reconnect_max_ms = 5000;
-        int read_timeout_ms = 20;
-
-        /* An unplug does not reliably surface as a read error on every OS, so
-         * silence is also treated as death. */
-        int no_data_watchdog_ms = 2000;
-
-        /* Mirror of the dongle's own 30 s rule: it simply stops sending
-         * TRACKER_STAT for a tracker, so the host must expire it. */
-        int tracker_expiry_ms = 30000;
-
-        /* An id is only reported as a tracker once it has been corroborated:
-         * either a TRACKER_STAT, or this many ORIENT frames. A CRC-16
-         * collision is ~1/65536 per corrupted frame, which over a long show on
-         * a noisy link is roughly one bogus id -- without a gate it would sit
-         * in the user's tracker list for the rest of the session. */
-        uint32_t promote_after_orients = 3;
-    };
+    using Options = ClientOptions;
 
     Client() = default;
     ~Client();
@@ -111,13 +116,11 @@ public:
 
     /* Starts the reader thread. `target` is a port path, or empty to
      * auto-discover. Returns false only if a thread is already running. */
-    /* Spelled `Options()` rather than `{}`: GCC rejects a brace-init default
-     * argument for a nested aggregate declared in the same class. */
     bool start(std::unique_ptr<Transport> transport, std::string target,
-               Options opts = Options());
+               ClientOptions opts = ClientOptions());
 
     /* Convenience: a real serial port, auto-discovered when target is empty. */
-    bool start(std::string target = std::string(), Options opts = Options());
+    bool start(std::string target = std::string(), ClientOptions opts = ClientOptions());
 
     /* Signals the reader thread and joins it. Safe to call twice, and safe to
      * call from a callback's thread only AFTER returning from the callback.
