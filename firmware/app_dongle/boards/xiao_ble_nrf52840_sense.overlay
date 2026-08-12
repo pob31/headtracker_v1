@@ -1,0 +1,22 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * app_dongle overlay for xiao_ble/nrf52840/sense.
+ * - CDC-ACM instance on the native USB device (the dongle's host pipe).
+ * - USBD interrupt priority moved out of ESB's reserved band.
+ */
+
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+/* PRD risk 1: ESB owns interrupt priorities 0-1; the nRF52 devicetree default
+ * puts USBD at priority 1, which corrupts radio reception under USB load.
+ * Raise USBD to priority 2.
+ * VERIFY on hardware: IRQ number 39 matches the usbd node in nrf52840.dtsi
+ * (only the priority cell is intended to change); confirm no radio CRC errors
+ * under sustained USB traffic. */
+&usbd {
+	interrupts = <39 2>;
+};

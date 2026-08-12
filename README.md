@@ -27,9 +27,11 @@ drop into µA-level standby automatically and wake within seconds when one appea
 
 ## Status
 
-**Docs-first phase.** Hardware (2× Seeed XIAO nRF52840 Sense) is on its way. The product
-requirements and the wire protocol are specified so that firmware and host software can be
-developed independently, starting before the boards arrive.
+**Pre-hardware drafts.** Hardware (2× Seeed XIAO nRF52840 Sense) is on its way. The spec
+is written, the shared protocol layer is implemented and validated against the spec's
+test vectors, and first drafts of both firmware apps exist — **written blind, not yet
+compiled** (no toolchain run yet); hardware-dependent uncertainties are marked
+`VERIFY`/`TODO` inline. Host library and tools are not started.
 
 - [docs/PRD.md](docs/PRD.md) — product requirements, architecture, roadmap
 - [docs/PROTOCOL.md](docs/PROTOCOL.md) — byte-exact USB protocol spec + ESB air protocol
