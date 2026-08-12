@@ -12,7 +12,7 @@ static float g_sample_dt;
 void htk_fusion_init(float sample_hz)
 {
     g_sample_dt = 1.0f / sample_hz;
-    filt = new (vqf_mem) VQF(g_sample_dt);
+    filt = new (static_cast<void *>(vqf_mem)) VQF(g_sample_dt);
 }
 
 void htk_fusion_update(const float gyr[3], const float acc[3], float q[4])

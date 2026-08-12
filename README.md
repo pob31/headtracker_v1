@@ -72,15 +72,23 @@ Firmware targets the **nRF Connect SDK v3.3.0** (Zephyr), board target
 
 ```
 nrfutil install sdk-manager
-nrfutil sdk-manager toolchain install --ncs-version v3.3.0
-
-# interactive dev shell (new terminal window):
-nrfutil sdk-manager toolchain launch --ncs-version v3.3.0 --terminal
-
-# or one-shot builds without entering the shell:
-nrfutil sdk-manager toolchain launch --ncs-version v3.3.0 --chdir <repo> -- west build -b xiao_ble/nrf52840/sense firmware/app_head -d build_head
-nrfutil sdk-manager toolchain launch --ncs-version v3.3.0 --chdir <repo> -- west build -b xiao_ble/nrf52840/sense firmware/app_dongle -d build_dongle
+nrfutil sdk-manager install v3.3.0     # SDK + toolchain, ~11 GB under C:\ncs
 ```
+
+Builds run from inside the SDK's west workspace (`C:\ncs\v3.3.0`). Windows quirk: if the
+repo lives on a different drive than the SDK, west's relative-path handling breaks —
+create a junction on the SDK's drive once and build through it:
+
+```
+mkdir C:\htk 2>NUL & rmdir C:\htk    # skip if C:\htk is free
+mklink /J C:\htk d:\dev\headtracker_v1
+
+nrfutil sdk-manager toolchain launch --ncs-version v3.3.0 --chdir C:\ncs\v3.3.0 -- west build -b xiao_ble/nrf52840/sense C:\htk\firmware\app_head -d C:\htk\build_head
+nrfutil sdk-manager toolchain launch --ncs-version v3.3.0 --chdir C:\ncs\v3.3.0 -- west build -b xiao_ble/nrf52840/sense C:\htk\firmware\app_dongle -d C:\htk\build_dongle
+```
+
+Artifacts land in `build_*/app_*/zephyr/zephyr.uf2`. Both apps currently build at ~10%
+flash / ~13% RAM.
 
 ### Flashing (no debug probe needed)
 

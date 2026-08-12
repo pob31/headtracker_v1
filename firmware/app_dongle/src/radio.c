@@ -63,7 +63,7 @@ static K_THREAD_STACK_DEFINE(radio_wq_stack, 1024);
 
 /* ---- ESB event handler (radio IRQ context: copy out, nothing else) ------ */
 
-static void esb_event_handler(const struct esb_evt *event)
+static void on_esb_event(const struct esb_evt *event)
 {
 	switch (event->evt_id) {
 	case ESB_EVENT_RX_RECEIVED: {
@@ -102,7 +102,7 @@ static int esb_setup(enum esb_mode mode)
 
 	config.protocol = ESB_PROTOCOL_ESB_DPL;
 	config.mode = mode;
-	config.event_handler = esb_event_handler;
+	config.event_handler = on_esb_event;
 	config.bitrate = ESB_BITRATE_2MBPS;
 	config.crc = ESB_CRC_16BIT;
 	/* Honor per-packet noack in both directions; nothing on this fabric

@@ -171,7 +171,7 @@ struct HTK_PACKED htk_beacon_hdr {
     uint8_t beacon_seq;
 };
 
-/* 0x21 — air only: head unit self-report, 1 Hz, 14 bytes */
+/* 0x21 — air only: head unit self-report, 1 Hz, 13 bytes */
 struct HTK_PACKED htk_tstatus {
     uint8_t  type;      /* HTK_PKT_TSTATUS */
     uint16_t id;
@@ -197,7 +197,7 @@ HTK_ASSERT_SIZE(struct htk_status, 9);
 HTK_ASSERT_SIZE(struct htk_raw, 22);
 HTK_ASSERT_SIZE(struct htk_hello_resp, 8);
 HTK_ASSERT_SIZE(struct htk_tracker_stat, 20);
-HTK_ASSERT_SIZE(struct htk_tstatus, 14);
+HTK_ASSERT_SIZE(struct htk_tstatus, 13);
 
 #ifdef __cplusplus
 }
