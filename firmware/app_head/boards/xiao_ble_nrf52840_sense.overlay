@@ -1,0 +1,24 @@
+/*
+ * Head unit overlay — Seeed XIAO nRF52840 Sense.
+ *
+ * ESB owns interrupt priorities 0-1 (PRD risk #1); every other peripheral
+ * must sit at >= 2 or the radio takes CRC errors under I/O load. The nRF52
+ * devicetree default for TWIM is priority 1, so bump both TWIM instances
+ * (the onboard LSM6DS3TR-C sits on one of them; raising the other is
+ * harmless). Second interrupt cell is the priority.
+ *
+ * VERIFY on hardware: confirm which bus hosts the lsm6ds3tr_c node in the
+ * board DT (expected &i2c1, pins P0.07/P0.27, TWIM1 = IRQ 4; external Xiao
+ * header I2C is &i2c0, TWIM0 = IRQ 3) and that these IRQ line numbers match
+ * nrf52840.dtsi. Then check for radio CRC errors while streaming at 416 Hz.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+&i2c0 {
+	interrupts = <3 2>;
+};
+
+&i2c1 {
+	interrupts = <4 2>;
+};
