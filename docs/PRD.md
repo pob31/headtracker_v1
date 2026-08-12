@@ -16,16 +16,20 @@ beyond a small client library that reads a serial port.
 
 Two Seeed XIAO nRF52840 Sense boards:
 
-- **Head unit** (battery- or cable-powered, head-worn): samples its onboard LSM6DS3TR-C
-  IMU at 416 Hz, runs 6DoF sensor fusion (VQF) on the MCU, and transmits orientation
+- **Head units** (battery- or cable-powered, head-worn): sample the onboard LSM6DS3TR-C
+  IMU at 416 Hz, run 6DoF sensor fusion (VQF) on the MCU, and **broadcast** orientation
   quaternions at ~208 Hz over Nordic ESB (Enhanced ShockBurst), a proprietary low-latency
-  2.4 GHz protocol. ESB was chosen over BLE deliberately: BLE's connection interval floor
-  (7.5 ms) puts ~8–12 ms in the path; ESB transactions complete in hundreds of
-  microseconds.
-- **Dongle** (USB, on the host): receives ESB packets, wraps them in a COBS-framed binary
-  protocol, and forwards them over USB CDC-ACM (a driverless virtual serial port on
-  Windows / Linux / macOS). Host→tracker commands (recenter, rate changes) travel the
-  reverse path, riding ESB ACK payloads back to the head unit.
+  2.4 GHz protocol, with no ACKs and no pairing. ESB was chosen over BLE deliberately:
+  BLE's connection interval floor (7.5 ms) puts ~8–12 ms in the path; an ESB packet is on
+  air for ~150 µs.
+- **Dongles** (USB, on a host): every receiver in range passively hears every tracker,
+  wraps the packets in a COBS-framed binary protocol, and forwards them over USB CDC-ACM
+  (a driverless virtual serial port on Windows / Linux / macOS). Receivers announce
+  themselves with periodic radio **beacons**: presence keeps head units out of standby,
+  and the beacons carry the rare sensor-directed commands (fusion reset, rate/mode) —
+  always addressed to one specific tracker, since sensor state changes are visible to
+  every receiver. Recentering is *not* a sensor command: it is per-listener math applied
+  in the client library.
 
 The full wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 
@@ -37,12 +41,14 @@ The full wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 |---|-------------|
 | F1 | Stream head orientation as unit quaternions with sequence number and device timestamp. |
 | F2 | Default update rate ~208 Hz; host-settable via `SET_RATE`. IMU sampled at 416 Hz so transmitted samples are at most ~2.4 ms old at capture. |
-| F3 | **Recenter**: host command zeroes the yaw reference (current heading becomes "front"). Pitch/roll remain gravity-referenced. Tracker confirms via a flag in the orientation stream. |
-| F4 | **Raw mode**: stream raw gyro/accel samples for fusion tuning and diagnostics. |
+| F3 | **Recenter**: client-library function zeroes the yaw reference (current heading becomes "front"); pitch/roll remain gravity-referenced. Per-listener by design — it never touches sensor state, so each receiver/app keeps its own reference. |
+| F4 | **Raw mode**: stream raw gyro/accel samples — for fusion tuning, and to allow fusion to run receiver-side instead of on the head unit (see §computation placement). |
 | F5 | **Simulator mode**: dongle can emit synthetic orientation data on command, so host software can be developed and tested with no head unit (or no radio link) present. |
-| F6 | Link health surfaced to the host: per-tracker packet-loss counts (sequence gaps), ESB retransmit/failure counts, update rate, battery voltage, at ≥1 Hz. |
+| F6 | Link health surfaced to the host: per-tracker packet-loss counts (sequence gaps, as seen by that receiver), update rate, battery voltage, at ≥1 Hz. |
 | F7 | Version/identity handshake so client apps can check protocol compatibility. |
-| F8 | **Multi-tracker, pairing-free**: the dongle receives every head unit in range (2–4 concurrent at full rate) and multiplexes them all onto the USB stream, tagged with a stable per-device hardware ID. The application lists available trackers and the user selects in-app — no pairing when a battery dies or headphones are swapped. Commands are addressed per tracker (or broadcast). |
+| F8 | **Multi-tracker, pairing-free**: a dongle receives every head unit in range (2–4 concurrent at full rate) and multiplexes them all onto the USB stream, tagged with a stable per-device hardware ID. The application lists available trackers and the user selects in-app — no pairing when a battery dies or headphones are swapped. |
+| F9 | **Multi-receiver broadcast**: any number of dongles listen simultaneously; all see all trackers, passively and independently. Consequence: sensor-directed commands (fusion reset, rate, mode) are always addressed to one specific tracker ID — a state change is visible to every receiver, so nothing mutates sensor state anonymously or broadcast-wide. |
+| F10 | **Auto standby**: head units stream only while at least one receiver's presence beacon has been heard recently; otherwise they drop to a µA-level standby, probing for beacons at low duty cycle (optionally deeper sleep when also motionless, via the IMU's wake-on-motion). Recovery when a receiver appears: seconds. |
 
 ### Performance
 
@@ -51,7 +57,7 @@ The full wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 | P1 | Motion-to-USB latency ≤ 5 ms typical (sensor sampling + fusion + air + USB). |
 | P2 | Orientation rate ≥ 200 Hz sustained, jitter well under one period. |
 | P3 | Yaw drift (6DoF, no magnetometer): minimized by VQF's online gyro-bias estimation and rest detection; drift is expected and recentering is the accepted correction. Target: slow enough that recentering more than every few minutes feels unnecessary in seated use. |
-| P4 | Radio robustness: latency-first retransmit policy (1–2 retransmits, then drop — the next 5 ms sample supersedes). Loss is measured and reported, not hidden. |
+| P4 | Radio robustness: pure broadcast, no ACKs or retransmissions — a lost sample is superseded ~4.8 ms later, and the latency path has zero retransmission jitter. Loss is measured per receiver via sequence gaps and reported, not hidden. |
 
 ### Platform / operations
 
@@ -62,6 +68,21 @@ The full wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 | O3 | Reproducible builds: nRF Connect SDK pinned to v3.3.0, CLI-only workflow (`nrfutil sdk-manager`), no IDE dependence. |
 | O4 | The IMU sits behind a driver interface (`imu_source`) so the LSM6DSV16X can replace the LSM6DS3TR-C without touching fusion consumers, radio, or protocol. |
 
+### Computation placement
+
+Orientation fusion can run on either side of the radio; both are first-class in the
+protocol, and the choice trades power and load:
+
+| placement | air traffic | head-unit load | notes |
+|---|---|---|---|
+| **Head unit (default)** — VQF on the MCU | quat @ 208 Hz (~26 B packets) | fusion math (small on an M4F; radio dominates power) | one canonical orientation shared by all receivers |
+| **Receiver side** — head streams raw | raw @ 208–416 Hz (~22 B packets) | minimal compute, more radio at 416 Hz | each receiver runs its own filter (freedom to experiment; results may differ between receivers) |
+| **IMU silicon (M7)** — LSM6DSV16X SFLP | quat @ 208 Hz | near-zero (hardware fusion) | lowest-power endpoint of the same interface |
+
+Radio transmission, not computation, dominates the head unit's power budget, so on-head
+fusion at 208 Hz is also the low-power default; raw mode is selected per tracker via
+`SET_MODE` when receiver-side fusion or filter tuning is wanted.
+
 ## 4. Non-goals (v1)
 
 - **Position tracking** — orientation only (3DoF rotation).
@@ -69,9 +90,10 @@ The full wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 - **More than ~4 concurrent trackers at full rate** — the shared-address air protocol
   degrades gracefully (lower per-tracker rates) but is not designed for crowds.
 - **Battery management / charging UX** — power the head unit however is convenient.
-- **Encryption or pairing** — pairing-free is a feature (F8); fixed radio address
-  constants are acceptable for lab/studio use. Two dongles on one channel will see each
-  other's trackers — by design for now.
+- **Encryption or installation isolation** — pairing-free broadcast is a feature
+  (F8/F9); fixed radio address constants are acceptable for lab/studio use. Separate
+  installations sharing channel 77 would see each other's trackers; site codes/whitening
+  are future work if that ever matters.
 - **Configuration persistence** — settings are per-session, re-applied by the host.
 - **LAN distribution in v1** — planned as a host daemon (`htbridge`, milestone M8) that
   republishes all trackers over UDP for multi-machine render clusters (WFS); additive,
@@ -85,8 +107,8 @@ The full wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 | M1 | Shared protocol lib (`htk_protocol.h`, COBS, CRC16) + host parser + unit tests + `htgen` synthetic stream tool | no |
 | M2 | Vendor VQF; desktop harness runs the exact target fusion code on synthetic IMU data | no |
 | M3 | First flash; dongle SIM_MODE streams over real USB → validates entire host path | yes |
-| M4 | ESB link live between the two boards; ACK-payload command path; loss/rate stats | yes |
-| M5 | IMU bring-up (raw mode first, then on-target VQF); recenter end-to-end | yes |
+| M4 | Broadcast air link live (no-ack uplink); receiver beacons + presence/standby; addressed command path; per-receiver loss/rate stats | yes |
+| M5 | IMU bring-up (raw mode first, then on-target VQF); client-side recenter end-to-end in `htmon` | yes |
 | M6 | Latency measurement + tuning (IRQ priorities, timing); protocol spec finalized v1.0 | yes |
 | M7 | LSM6DSV16X breakout via external I2C; hardware SFLP fusion backend (`hw_fusion` flag) | yes |
 | M8 | `htbridge` LAN daemon: republish all trackers over UDP + discovery, for render clusters | yes |
@@ -104,9 +126,11 @@ Verified against Nordic/Zephyr documentation and source (Aug 2026):
   a P1.08 regulator with 3 ms startup).
 - **UF2 output is on by default** for this board; app partition at 0x27000. MCUboot must
   stay off (UF2 + sysbuild is broken upstream, Zephyr #88802).
-- **ESB** samples ship in the SDK (`samples/esb/esb_ptx` / `esb_prx`); ACK payloads are
-  pre-queued on the receiver and ride out on the next ACK — exactly the command path we
-  need. 32-byte dynamic payloads fit our 24-byte packet.
+- **ESB** samples ship in the SDK (`samples/esb/esb_ptx` / `esb_prx`); per-packet
+  `noack` transmission is supported, which is what the broadcast fabric uses in both
+  directions (dongles alternate between listening on the uplink address and emitting
+  short presence beacons on the downlink address). 32-byte dynamic payloads fit our
+  26-byte packet.
 - **LSM6DSV16X hardware fusion (SFLP)** is supported in-tree since Zephyr v4.1 (in NCS
   3.3), exposing game-rotation-vector quaternions — the M7 upgrade path is real.
 - **VQF** (github.com/dlaidig/vqf) is MIT-licensed, single-file C++, with online gyro-bias
@@ -128,9 +152,11 @@ Risks to engineer around:
 ## 7. Acceptance (v1 done)
 
 Wearing the head unit, running `htmon` on any of the three OSes: orientation streams at
-≥200 Hz with reported loss <1% at 2 m line-of-sight, recenter works from the host, measured
-motion-to-USB latency ≤5 ms typical, and yaw drift in seated use is slow enough that the
-scene remains stable between occasional recenters. A target application (WFS-DIY) consumes
-the stream via the client library with no device-specific code beyond it. With two head
-units powered, both appear in the tracker list and switching between them in the app is
-immediate, with no pairing step.
+≥200 Hz with reported loss <1% at 2 m line-of-sight, client-side recenter works in-app,
+measured motion-to-USB latency ≤5 ms typical, and yaw drift in seated use is slow enough
+that the scene remains stable between occasional recenters. A target application
+(WFS-DIY) consumes the stream via the client library with no device-specific code beyond
+it. With two head units powered, both appear in the tracker list and switching between
+them in the app is immediate, with no pairing step. With two dongles on two machines,
+both independently see all trackers. Unplugging every dongle sends the head units into
+standby within ~15 s; plugging one back in restores streaming within seconds.

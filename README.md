@@ -7,20 +7,22 @@ to a USB dongle, which forwards them to a spatial audio application (WFS-DIY, XO
 Tight-WFS) over a plain serial port. Designed for a motion-to-USB latency of a few
 milliseconds — well inside the perceptual budget for dynamic binaural rendering.
 
-**Pairing-free multi-tracker:** the dongle receives every head unit in range and forwards
-them all, each tagged with a stable hardware ID. The audio app shows the list of live
-trackers and the user picks one in-app — swapping a dead battery or a different headphone
-rig means picking the new unit from the list, nothing more.
+**Pairing-free broadcast, both ways:** head units broadcast; every receiver in range
+hears every tracker, each packet tagged with a stable hardware ID. The audio app shows
+the list of live trackers and the user picks one in-app — swapping a dead battery or a
+different headphone rig means picking the new unit from the list, nothing more. Receivers
+announce their presence with periodic radio beacons; head units that hear no receiver
+drop into µA-level standby automatically and wake within seconds when one appears.
 
 ```
- head-worn units (1..4)                USB dongle                  host PC
+ head-worn units (1..4)                USB dongles (1..n)          host PCs
 ┌──────────────────────────┐   ESB    ┌─────────────────┐  CDC   ┌─────────────────────┐
 │ LSM6DS3TR-C ─► VQF fusion│ 2.4 GHz  │ ESB RX ─► framer│  USB   │ spatial audio app   │
 │ 416 Hz IMU     (6DoF)    │ ═══════► │  + tracker table│ ─────► │ tracker list, user  │
-│ XIAO nRF52840 Sense  ×N  │ ◄─ ACK ─ │ XIAO nRF52840   │ ◄───── │ picks; WFS-DIY/XOA/ │
-└──────────────────────────┘ commands └─────────────────┘  cmds  │ Tight-WFS           │
-        quaternions @ ~208 Hz                                    └─────────────────────┘
-        each tagged with tracker ID                      COBS-framed binary protocol
+│ XIAO nRF52840 Sense  ×N  │ ◄beacon─ │ XIAO nRF52840 ×n│ ◄───── │ picks; WFS-DIY/XOA/ │
+└──────────────────────────┘ presence └─────────────────┘  cmds  │ Tight-WFS           │
+   quaternions @ ~208 Hz,    + cmds                              └─────────────────────┘
+   no-ack broadcast, tracker-ID tagged                   COBS-framed binary protocol
 ```
 
 ## Status
