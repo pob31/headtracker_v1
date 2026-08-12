@@ -71,8 +71,13 @@ Firmware targets the **nRF Connect SDK v3.3.0** (Zephyr), board target
 ```
 nrfutil install sdk-manager
 nrfutil sdk-manager toolchain install --ncs-version v3.3.0
-nrfutil sdk-manager toolchain launch --ncs-version v3.3.0 --shell
-west build -b xiao_ble/nrf52840/sense firmware/app_head -d build_head
+
+# interactive dev shell (new terminal window):
+nrfutil sdk-manager toolchain launch --ncs-version v3.3.0 --terminal
+
+# or one-shot builds without entering the shell:
+nrfutil sdk-manager toolchain launch --ncs-version v3.3.0 --chdir <repo> -- west build -b xiao_ble/nrf52840/sense firmware/app_head -d build_head
+nrfutil sdk-manager toolchain launch --ncs-version v3.3.0 --chdir <repo> -- west build -b xiao_ble/nrf52840/sense firmware/app_dongle -d build_dongle
 ```
 
 ### Flashing (no debug probe needed)
