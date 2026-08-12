@@ -1,0 +1,66 @@
+name: host-lib
+
+# The host client library is consumed by WFS-DIY, XOA and Tight-WFS, so it has
+# to build and pass on every platform they ship on. This is also the only place
+# the POSIX serial transport gets compiled at all -- development happens on
+# Windows, so without a Linux and a macOS job that half of transport.cpp would
+# ship unbuilt.
+on:
+  push:
+    paths:
+      - 'host/**'
+      - 'firmware/common/protocol/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/ci.yml'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+          - os: macos-latest
+            name: macos
+          - os: windows-latest
+            name: windows
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure
+        run: cmake -B build -S . -DHTK_BUILD_TESTS=ON -DHTK_BUILD_TOOLS=ON -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Debug --output-on-failure
+
+      # htgen | htmon is the hardware-free end-to-end path: it drives the real
+      # parser, client and tracker table over a replayed byte stream, so a
+      # regression in any of them fails here rather than at bring-up.
+      - name: Replay smoke test (no hardware)
+        shell: bash
+        run: |
+          BIN=build/host/tools
+          if [ -x "$BIN/htgen/Debug/htgen.exe" ]; then
+            HTGEN="$BIN/htgen/Debug/htgen.exe"; HTMON="$BIN/htmon/Debug/htmon.exe"
+          else
+            HTGEN="$BIN/htgen/htgen"; HTMON="$BIN/htmon/htmon"
+          fi
+          "$HTGEN" --frames 4000 --trackers 3 --garbage 2 --out dump.bin
+          "$HTMON" --replay dump.bin --fast --once
+
+  sanitize:
+    name: asan (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cmake -B build-asan -S . -DHTK_BUILD_TESTS=ON -DHTK_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug
+      - run: cmake --build build-asan --parallel
+      - run: ctest --test-dir build-asan --output-on-failure

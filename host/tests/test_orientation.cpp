@@ -5,6 +5,7 @@
 #include "headtracker/orientation.hpp"
 
 #include <cmath>
+#include <limits>
 
 using htk::Quat;
 
@@ -105,4 +106,55 @@ TEST_CASE("degenerate wire quaternions normalize to identity, never NaN")
     CHECK(n.w == 1.0f);
     const auto h = htk::heading(from_axis_angle(0, 1, 0, kPi)); /* w=z=0 */
     CHECK(h.w == 1.0f); /* documented degenerate fallback */
+}
+
+TEST_CASE("non-finite wire quaternions never propagate")
+{
+    /* A frame can pass CRC and still carry a NaN/inf float: the CRC covers the
+     * bytes, not their meaning. The guards in normalized()/heading() must be
+     * written in positive logic, because `n2 < eps` is FALSE for NaN and would
+     * let 1/sqrt(NaN) straight through. This is the library's "never emits
+     * garbage" contract, and consumers latch filter/reference state from it. */
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+
+    const Quat bad_quats[] = {
+        { nan, 0, 0, 0 }, { 1, nan, 0, 0 }, { 0, 0, nan, 0 }, { 0, 0, 0, nan },
+        { inf, 0, 0, 0 }, { 1, 0, inf, 0 }, { nan, nan, nan, nan },
+    };
+
+    for (const Quat &bad : bad_quats) {
+        const auto n = htk::normalized(bad);
+        CHECK(std::isfinite(n.w));
+        CHECK(std::isfinite(n.x));
+        CHECK(std::isfinite(n.y));
+        CHECK(std::isfinite(n.z));
+
+        const auto h = htk::heading(bad);
+        CHECK(std::isfinite(h.w));
+        CHECK(std::isfinite(h.z));
+
+        /* and through the full reference-frame path a consumer actually uses */
+        htk::Recenterer r;
+        r.boresight(bad);
+        const auto q = r.apply(from_axis_angle(0, 0, 1, kPi / 4));
+        CHECK(std::isfinite(q.w));
+        CHECK(std::isfinite(q.x));
+        CHECK(std::isfinite(q.y));
+        CHECK(std::isfinite(q.z));
+    }
+}
+
+TEST_CASE("quat_of normalizes a non-finite ORIENT payload")
+{
+    htk_orient o{};
+    o.type = HTK_PKT_ORIENT;
+    o.q_w = std::numeric_limits<float>::quiet_NaN();
+    o.q_x = o.q_y = o.q_z = 0.0f;
+
+    const auto q = htk::quat_of(o);
+    CHECK(std::isfinite(q.w));
+    CHECK(std::isfinite(q.x));
+    CHECK(std::isfinite(q.y));
+    CHECK(std::isfinite(q.z));
 }

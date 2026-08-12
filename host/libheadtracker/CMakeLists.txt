@@ -7,11 +7,21 @@ add_library(headtracker_client STATIC
   src/parser.cpp
   src/commands.cpp
   src/orientation.cpp
+  src/transport.cpp
+  src/client.cpp
   ${HTK_PROTO_DIR}/htk_crc16.c
   ${HTK_PROTO_DIR}/htk_cobs.c
   ${HTK_PROTO_DIR}/htk_frame.c
 )
 add_library(headtracker::client ALIAS headtracker_client)
+
+# Serial transport: SetupAPI for port enumeration on Windows, a thread
+# everywhere. Consumers linking the alias inherit both.
+find_package(Threads REQUIRED)
+target_link_libraries(headtracker_client PUBLIC Threads::Threads)
+if(WIN32)
+  target_link_libraries(headtracker_client PUBLIC setupapi advapi32)
+endif()
 
 target_include_directories(headtracker_client PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include

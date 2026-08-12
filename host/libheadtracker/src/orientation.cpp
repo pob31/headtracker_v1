@@ -23,7 +23,16 @@ Quat conjugate(const Quat &q)
 Quat normalized(const Quat &q)
 {
     const float n2 = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
-    if (n2 < 1e-12f) {
+    /* A frame can pass CRC and still carry a non-finite float: the CRC covers
+     * the bytes, not their meaning. Both halves of this guard are load-bearing:
+     *   - positive logic, because `n2 < 1e-12f` is FALSE when n2 is NaN and
+     *     would let 1/sqrt(NaN) straight through;
+     *   - isfinite, because an infinite component makes n2 infinite, which
+     *     PASSES a lower-bound test and then yields inf * (1/sqrt(inf)) =
+     *     inf * 0 = NaN.
+     * Non-finite in any component makes n2 non-finite, so this one test covers
+     * every way the wire can poison the result. */
+    if (!(std::isfinite(n2) && n2 > 1e-12f)) {
         return {}; /* degenerate wire data -> identity, never NaN */
     }
     const float inv = 1.0f / std::sqrt(n2);
@@ -38,7 +47,7 @@ Quat quat_of(const htk_orient &o)
 Quat heading(const Quat &q)
 {
     const float n2 = q.w * q.w + q.z * q.z;
-    if (n2 < 1e-12f) {
+    if (!(std::isfinite(n2) && n2 > 1e-12f)) { /* NaN/inf-safe, see normalized() */
         return {};
     }
     const float inv = 1.0f / std::sqrt(n2);

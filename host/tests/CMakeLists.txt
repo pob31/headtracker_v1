@@ -4,6 +4,7 @@ add_executable(htk_tests
   test_vectors.cpp
   test_parser.cpp
   test_orientation.cpp
+  test_client.cpp
   test_fuzz_smoke.cpp
 )
 target_link_libraries(htk_tests PRIVATE headtracker::client)

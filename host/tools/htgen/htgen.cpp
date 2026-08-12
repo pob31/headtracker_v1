@@ -49,6 +49,7 @@ struct Options {
     unsigned garbage_pct = 0;
     uint64_t seed = 42;
     std::string out;
+    bool hello = true;
 };
 
 void emit(FILE *f, Rng &rng, const Options &opt, const void *payload, size_t len)
@@ -105,10 +106,12 @@ int main(int argc, char **argv)
             opt.seed = std::stoull(val());
         } else if (a == "--out") {
             opt.out = val();
+        } else if (a == "--no-hello") {
+            opt.hello = false;
         } else {
             std::fprintf(stderr,
                          "usage: htgen [--frames N] [--rate HZ] [--trackers K]"
-                         " [--garbage PCT] [--seed S] [--out FILE]\n");
+                         " [--garbage PCT] [--seed S] [--out FILE] [--no-hello]\n");
             return 2;
         }
     }
@@ -134,6 +137,30 @@ int main(int argc, char **argv)
     Rng rng(opt.seed);
     const uint32_t period_us = 1000000u / opt.rate;
     uint16_t seq[8] = { 0 };
+
+    /* A capture is replayed into a client that opens the session by sending
+     * HELLO (PROTOCOL.md §1.7) and refuses to stream until it is answered.
+     * A one-way file cannot answer anything, so the answer leads the stream —
+     * close enough for replay, and it makes htgen output a complete session
+     * rather than a fragment. --no-hello reproduces a mid-stream attach, where
+     * the consumer joins a dongle that is already running. */
+    if (opt.hello) {
+        htk_hello_resp hr;
+        std::memset(&hr, 0, sizeof(hr));
+        hr.type = HTK_PKT_HELLO_RESP;
+        hr.proto_ver = HTK_PROTO_VERSION;
+        hr.fw_major = HTK_FW_MAJOR;
+        hr.fw_minor = HTK_FW_MINOR;
+        hr.fw_patch = HTK_FW_PATCH;
+        hr.device = 1;
+        hr.caps = HTK_CAP_QUAT | HTK_CAP_RAW | HTK_CAP_SIM | HTK_CAP_MULTI;
+        /* Never corrupted: garbage tolerance is about the data path, and a
+         * capture whose handshake is mangled would just fail to open. */
+        uint8_t frame[HTK_MAX_FRAME];
+        const size_t n = htk_frame_encode(reinterpret_cast<const uint8_t *>(&hr),
+                                          sizeof(hr), frame, sizeof(frame));
+        fwrite(frame, 1, n, f);
+    }
 
     for (unsigned n = 0; n < opt.frames; n++) {
         const uint32_t t_us = n * period_us;
