@@ -27,11 +27,11 @@ drop into µA-level standby automatically and wake within seconds when one appea
 
 ## Status
 
-**Pre-hardware drafts.** Hardware (2× Seeed XIAO nRF52840 Sense) is on its way. The spec
-is written, the shared protocol layer is implemented and validated against the spec's
-test vectors, and first drafts of both firmware apps exist — **written blind, not yet
-compiled** (no toolchain run yet); hardware-dependent uncertainties are marked
-`VERIFY`/`TODO` inline. Host library and tools are not started.
+**Pre-hardware, software complete to the extent possible.** Hardware (2× Seeed XIAO
+nRF52840 Sense) is on its way. The spec is written; both firmware apps **compile to
+flashable UF2** (never run on hardware yet — `VERIFY`/`TODO` markers gate the
+hardware-dependent parts); the host client library builds and passes its full test
+suite (spec conformance vectors, parser robustness, fuzzing, ASan-clean).
 
 - [docs/PRD.md](docs/PRD.md) — product requirements, architecture, roadmap
 - [docs/PROTOCOL.md](docs/PROTOCOL.md) — byte-exact USB protocol spec + ESB air protocol
@@ -104,10 +104,37 @@ and we don't need it. A bad app flash is always recoverable via double-tap reset
 ## Host side
 
 The dongle enumerates as a standard USB CDC-ACM serial port — driverless on Windows 10+,
-Linux, and macOS. Any language that can open a serial port can consume the stream; a C++
-reference library and CLI monitor are planned under `host/`. For multi-machine render
-clusters, a LAN bridge daemon (`htbridge`) that republishes all trackers over UDP is on
-the roadmap (M8).
+Linux, and macOS. Any language that can open a serial port can consume the stream. The
+reference C++17 client library lives in `host/libheadtracker/`:
+
+- `htk::Parser` — push parser: feed raw serial bytes, get typed packet callbacks.
+  Garbage-proof (fuzz-tested, ASan-clean) and version-tolerant (unknown packet types
+  skipped, see PROTOCOL.md §1.9). Compiles the same protocol C sources as the firmware.
+- `htk::encode_*` — command frame builders (recenter targets validated at the API).
+- `htk::Recenterer` — client-side recenter (yaw) + boresight (mounting tare), §1.6.
+
+Consumer apps integrate via CMake and link `headtracker::client`:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(headtracker
+  GIT_REPOSITORY https://github.com/pob31/headtracker_v1 GIT_TAG main)
+FetchContent_MakeAvailable(headtracker)
+target_link_libraries(your_app PRIVATE headtracker::client)
+```
+
+Build and test the host side standalone (any C++17 compiler; VS2026 tested):
+
+```
+cmake -B build-host -S .
+cmake --build build-host --config Debug
+ctest --test-dir build-host -C Debug
+```
+
+`host/tools/htgen` generates synthetic dongle streams (optionally corrupted with
+`--garbage <pct>`) for testing consumers without hardware. A live CLI monitor (`htmon`)
+plus serial transport arrive with hardware bring-up; the `htbridge` LAN daemon for
+multi-machine render clusters is roadmap item M8.
 
 ## License
 

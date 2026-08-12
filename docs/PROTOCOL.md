@@ -1,6 +1,6 @@
 # Head Tracker Protocol Specification
 
-**Protocol version:** 1 · **Spec status:** draft v0.4 (frozen at milestone M6) · 2026-08-12
+**Protocol version:** 1 · **Spec status:** draft v0.5 (frozen at milestone M6) · 2026-08-12
 
 This document specifies two wire formats:
 
@@ -222,27 +222,29 @@ from configuring the same tracker; last command wins.
 ### 1.6 Recentering and boresight (client-side, not wire commands)
 
 Both operations define the listener's reference frame; they are per-listener state, so
-they live in the receiver's client library, not on the sensor. Both follow the same
-pattern — capture a reference `q_ref` on the user's action, then output
-`q' = q_ref⁻¹ ⊗ q` for every subsequent sample `q` from that tracker — and differ only
-in what is captured:
+they live in the receiver's client library, not on the sensor. Each captures a
+reference on the user's action — but they apply on **different sides** of the
+quaternion product, and the side matters:
 
-- **Recenter (yaw-only)**: `q_ref = heading(q_c)` — the unit quaternion
-  `(w, 0, 0, z)/‖(w, 0, 0, z)‖` built from the current sample `q_c`'s w and z components.
-  Zeroes "front" while keeping pitch/roll gravity-referenced. This is the routine
-  correction for 6DoF yaw drift.
-- **Boresight (full-pose tare)**: `q_ref = q_c`, captured while the wearer holds their
-  head level and looks straight ahead. Absorbs the *mounting* orientation — a sensor
-  clipped to a headband or velcroed to an earcup at an arbitrary angle — which yaw-only
-  recentering cannot. Typical flow: boresight once when the sensor is attached to a new
-  rig, recenter as often as wanted afterwards (composing the two references is the
-  library's job).
+- **Recenter (yaw-only)**: capture `y_ref = heading(q_c)` — the unit quaternion
+  `(w, 0, 0, z)/‖(w, 0, 0, z)‖` built from the current sample `q_c`'s w and z
+  components. Yaw is a rotation in the **world** frame, so its inverse applies on the
+  **left**: `q' = y_ref⁻¹ ⊗ q`. Zeroes "front" while keeping pitch/roll
+  gravity-referenced. This is the routine correction for 6DoF yaw drift.
+- **Boresight (full-pose tare)**: capture `b_ref = q_c` while the wearer holds their
+  head level and looks straight ahead. The mounting offset composes on the **body**
+  side of a body→world quaternion (`q_sensor = q_head ⊗ q_mount`), so the tare applies
+  on the **right**: `q' = q ⊗ b_ref⁻¹`. A left-side tare would be exact only at the
+  capture pose and would conjugate every later rotation into the tilted mounting axes
+  (e.g. a true 30° head yaw reads ≈28° under a 25° mount roll). Right-side tare cancels
+  the mount exactly for all subsequent motion.
+- **Composed** (boresight once per rig, recenter freely afterwards):
+  `q' = y_ref⁻¹ ⊗ q ⊗ b_ref⁻¹`, where `y_ref` is captured as
+  `heading(q_c ⊗ b_ref⁻¹)` — the heading of the already-boresighted pose.
 
-Caveat: after a full-pose boresight, "yaw" rotations are about the boresighted vertical,
-which is only as level as the wearer's head was during capture — good enough in practice,
-and repeating the capture is free. The reference library implements both; each
-application (or each machine in a future LAN-bridged cluster) keeps its own references.
-Sensor orientation origin is arbitrary and yaw drifts slowly (6DoF); re-running either
+The reference library implements exactly this (`htk::Recenterer`); each application
+(or each machine in a future LAN-bridged cluster) keeps its own references. Sensor
+orientation origin is arbitrary and yaw drifts slowly (6DoF); re-running either
 procedure costs nothing to any other receiver.
 
 ### 1.7 Session behavior
@@ -319,12 +321,34 @@ payload     : 05 34 12 05 00 00 00 D0 00 03 00 00 00 AC 0F 00 01 00 00 01
 frame       : 05 05 34 12 05 01 01 02 D0 02 03 01 01 03 AC 0F 02 01 01 04 01 25 E9 00
 ```
 
-### 1.9 Versioning rules
+### 1.9 Versioning and the consumer compatibility contract
 
-- `proto_ver` bumps only on breaking changes (field layout/meaning of existing packets).
-- Adding new packet types or defining reserved flag bits is **not** breaking — clients
-  must skip unknown types and mask unknown bits.
-- Frozen at milestone M6 as v1.0; until then this draft may change without a bump.
+The protocol **promises** to consumer applications:
+
+1. The byte layout and meaning of an existing packet type never changes within a
+   protocol version. Breaking changes bump `proto_ver`.
+2. Evolution is **additive**: new packet types use previously unassigned type codes;
+   new semantics on existing packets use previously reserved flag/caps bits. Neither
+   bumps the version.
+3. Reserved fields and bits read as 0 until assigned.
+
+A consumer (or its client library) **must**, in return:
+
+1. Send `HELLO` after connecting and check `HELLO_RESP.proto_ver` for equality with
+   the version it implements; refuse or warn on mismatch.
+2. Skip unknown packet types silently (COBS framing makes every frame skippable
+   without understanding it). An unknown type is *not* an error.
+3. Mask flag/caps fields to the bits it knows before interpreting them
+   (`htk::kKnownOrientFlags` etc. in the reference library).
+4. Treat malformed frames (CRC/COBS/length) as line noise: count, resync, continue.
+
+The reference implementation of this contract is `htk::Parser` +
+`htk::compatible()` in `host/libheadtracker/` — consumers using it get all four
+obligations for free. A dongle firmware update can therefore ship new packet types to
+a fleet without breaking any deployed application.
+
+Freeze: this document is frozen at milestone M6 as v1.0; until then this draft may
+change without a bump.
 
 ---
 
