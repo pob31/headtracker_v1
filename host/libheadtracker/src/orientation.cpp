@@ -73,22 +73,32 @@ EulerZYX to_euler(const Quat &q)
 
 void Recenterer::boresight(const Quat &current)
 {
-    /* RIGHT-side inverse: for body->world quaternions the mounting offset
-     * composes on the body side, q_sensor = q_head ⊗ q_mount. A left-side
-     * tare would conjugate later rotations into the tilted mount axes
-     * (a 30° yaw would read ~28° under a 25° mount roll); right-side tare
-     * cancels the mount exactly: q ⊗ q_ref⁻¹ = q_worldmotion. */
-    bore_inv_ = conjugate(normalized(current));
-    yaw_inv_ = {};
+    /* Two facts shape this:
+     * 1. RIGHT-side inverse: the mounting offset composes on the body side
+     *    of a body->world quaternion (q_sensor = q_head ⊗ q_mount), so the
+     *    tare divides on the right; q ⊗ q_ref⁻¹ is the rotation since
+     *    capture, expressed in world coordinates.
+     * 2. Heading conjugation: the fusion's world X/Y horizontal axes are
+     *    arbitrary (6DoF yaw origin), so that rotation must be re-expressed
+     *    in a frame whose X is the direction the wearer faced at capture:
+     *    q' = h⁻¹ ⊗ (q ⊗ q_ref⁻¹) ⊗ h,  h = heading(q_ref).
+     *    Without this, a pure physical roll about the "forward" axis reads
+     *    as a yaw/pitch/roll mixture whenever the fusion's yaw origin
+     *    doesn't happen to align with the capture direction. */
+    const Quat q_ref = normalized(current);
+    const Quat h = heading(q_ref);
+
+    bore_inv_ = multiply(conjugate(q_ref), h);
+    yaw_inv_ = conjugate(h);
 }
 
 void Recenterer::recenter(const Quat &current)
 {
-    /* Zero the yaw of the boresight-corrected pose, not of the raw sensor
-     * pose — so recenter composes with a prior boresight. Yaw is a
-     * world-frame Z rotation, so its inverse applies on the LEFT. */
-    const Quat corrected = multiply(normalized(current), bore_inv_);
-    yaw_inv_ = conjugate(heading(corrected));
+    /* Zero the yaw of the fully corrected pose (compositional, so repeated
+     * recenters and a prior boresight stack). Yaw is a world-frame Z
+     * rotation: its inverse composes on the LEFT. */
+    const Quat corrected = apply(normalized(current));
+    yaw_inv_ = multiply(conjugate(heading(corrected)), yaw_inv_);
 }
 
 Quat Recenterer::apply(const Quat &raw) const

@@ -231,16 +231,27 @@ quaternion product, and the side matters:
   components. Yaw is a rotation in the **world** frame, so its inverse applies on the
   **left**: `q' = y_ref⁻¹ ⊗ q`. Zeroes "front" while keeping pitch/roll
   gravity-referenced. This is the routine correction for 6DoF yaw drift.
-- **Boresight (full-pose tare)**: capture `b_ref = q_c` while the wearer holds their
-  head level and looks straight ahead. The mounting offset composes on the **body**
-  side of a body→world quaternion (`q_sensor = q_head ⊗ q_mount`), so the tare applies
-  on the **right**: `q' = q ⊗ b_ref⁻¹`. A left-side tare would be exact only at the
-  capture pose and would conjugate every later rotation into the tilted mounting axes
-  (e.g. a true 30° head yaw reads ≈28° under a 25° mount roll). Right-side tare cancels
-  the mount exactly for all subsequent motion.
+- **Boresight (full-pose tare)**: capture `b_ref = q_c` and its heading
+  `h = heading(b_ref)` while the wearer holds their head level and looks straight
+  ahead. Two rules make this exact for all subsequent motion:
+  1. The mounting offset composes on the **body** side of a body→world quaternion
+     (`q_sensor = q_head ⊗ q_mount`), so the tare divides on the **right**:
+     `q ⊗ b_ref⁻¹` is the rotation since capture in world coordinates. (A left-side
+     tare would conjugate later rotations into the tilted mount axes — a true 30°
+     yaw would read ≈28° under a 25° mount roll.)
+  2. That rotation must then be **re-expressed in the capture-aligned frame** —
+     the fusion's world X/Y axes are arbitrary (6DoF yaw origin), so conjugate by
+     the captured heading: `q' = h⁻¹ ⊗ (q ⊗ b_ref⁻¹) ⊗ h`. Without this, a pure
+     physical roll about the "forward" axis decomposes into a yaw/pitch/roll
+     mixture whenever the fusion's yaw origin differs from the capture direction
+     (found on the bench: board on its side read as a three-axis mess).
 - **Composed** (boresight once per rig, recenter freely afterwards):
-  `q' = y_ref⁻¹ ⊗ q ⊗ b_ref⁻¹`, where `y_ref` is captured as
-  `heading(q_c ⊗ b_ref⁻¹)` — the heading of the already-boresighted pose.
+  `q' = y_ref⁻¹ ⊗ h⁻¹ ⊗ q ⊗ b_ref⁻¹ ⊗ h`, with `y_ref` maintained compositionally:
+  each recenter left-multiplies the inverse heading of the currently corrected pose.
+- **Display note**: yaw/pitch/roll extraction (Z-Y'-X'') is inherently degenerate at
+  pitch = ±90° (gimbal lock: yaw and roll collapse into one degree of freedom and the
+  numbers jump, while the quaternion remains perfectly valid). Renderers MUST consume
+  the quaternion; Euler angles are for human-readable display only.
 
 The reference library implements exactly this (`htk::Recenterer`); each application
 (or each machine in a future LAN-bridged cluster) keeps its own references. Sensor

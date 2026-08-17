@@ -5,6 +5,7 @@
 #include "headtracker/orientation.hpp"
 
 #include <cmath>
+#include <initializer_list>
 #include <limits>
 
 using htk::Quat;
@@ -83,6 +84,74 @@ TEST_CASE("boresight absorbs an arbitrary mounting orientation")
     const auto turned = htk::multiply(from_axis_angle(0, 0, 1, 30 * kPi / 180), mount);
     const auto e = htk::to_euler(r.apply(turned));
     CHECK(e.yaw == doctest::Approx(30 * kPi / 180).epsilon(1e-2));
+}
+
+namespace {
+
+/* v' = q v q* — rotate a vector by a quaternion (test-local helper) */
+void rotate_vec(const Quat &q, const float v[3], float out[3])
+{
+    const Quat p = { 0.0f, v[0], v[1], v[2] };
+    const Quat r = htk::multiply(htk::multiply(q, p), htk::conjugate(q));
+    out[0] = r.x;
+    out[1] = r.y;
+    out[2] = r.z;
+}
+
+Quat from_axis_angle_v(const float a[3], float angle)
+{
+    return from_axis_angle(a[0], a[1], a[2], angle);
+}
+
+} // namespace
+
+TEST_CASE("bench sequence: pure physical motions read as pure angles, "
+          "independent of the fusion's arbitrary yaw origin")
+{
+    /* The board lies flat, "cable" (forward) pointing wherever; the fusion's
+     * world yaw origin is arbitrary. Regression for a real bench finding:
+     * without heading conjugation in the boresight, a pure roll about the
+     * forward axis read as a yaw/pitch/roll mixture. */
+    for (float origin_deg : { 0.0f, 40.0f, 140.0f, -77.0f }) {
+        const Quat q_ref = from_axis_angle(0, 0, 1, origin_deg * kPi / 180);
+        htk::Recenterer r;
+        r.boresight(q_ref);
+
+        /* at capture: exactly zero */
+        CHECK(approx_same_rotation(r.apply(q_ref), Quat{}));
+
+        /* physical forward and ear axes in world coordinates */
+        const float fwd_body[3] = { 1, 0, 0 }, ear_body[3] = { 0, 1, 0 };
+        float fwd[3], ear[3];
+        rotate_vec(q_ref, fwd_body, fwd);
+        rotate_vec(q_ref, ear_body, ear);
+
+        /* roll +/-90 about the cable/forward axis: roll only */
+        for (float deg : { 90.0f, -90.0f }) {
+            const auto q = htk::multiply(from_axis_angle_v(fwd, deg * kPi / 180),
+                                         q_ref);
+            const auto e = htk::to_euler(r.apply(q));
+            CHECK(e.roll == doctest::Approx(deg * kPi / 180).epsilon(1e-3));
+            CHECK(e.yaw == doctest::Approx(0.0f).epsilon(1e-3));
+            CHECK(e.pitch == doctest::Approx(0.0f).epsilon(1e-3));
+        }
+
+        /* nod 30 deg about the ear axis: pitch only */
+        const auto nod = htk::multiply(from_axis_angle_v(ear, 30 * kPi / 180),
+                                       q_ref);
+        const auto en = htk::to_euler(r.apply(nod));
+        CHECK(en.pitch == doctest::Approx(30 * kPi / 180).epsilon(1e-3));
+        CHECK(en.yaw == doctest::Approx(0.0f).epsilon(1e-3));
+        CHECK(en.roll == doctest::Approx(0.0f).epsilon(1e-3));
+
+        /* shake 25 deg about vertical: yaw only */
+        const auto shake = htk::multiply(from_axis_angle(0, 0, 1, 25 * kPi / 180),
+                                         q_ref);
+        const auto es = htk::to_euler(r.apply(shake));
+        CHECK(es.yaw == doctest::Approx(25 * kPi / 180).epsilon(1e-3));
+        CHECK(es.pitch == doctest::Approx(0.0f).epsilon(1e-3));
+        CHECK(es.roll == doctest::Approx(0.0f).epsilon(1e-3));
+    }
 }
 
 TEST_CASE("recenter composes on top of boresight")
