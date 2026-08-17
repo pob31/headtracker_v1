@@ -22,3 +22,13 @@
 &i2c1 {
 	interrupts = <4 2>;
 };
+
+/* The IMU rail is always-on, so the chip keeps state across MCU resets and
+ * the lsm6dsl driver's boot-time init fails on any warm boot ("Failed to
+ * initialize chip", Zephyr #55892 class). Defer the driver init; main()
+ * SW_RESETs the chip over raw I2C first, then runs device_init() itself.
+ * (A failed boot-time init cannot be retried: device_init() refuses
+ * already-attempted devices.) */
+&lsm6ds3tr_c {
+	zephyr,deferred-init;
+};

@@ -1,0 +1,13 @@
+/* Debug build: route the Zephyr console/log to a USB CDC-ACM instance.
+ * SPDX-License-Identifier: GPL-3.0-or-later */
+/ {
+	chosen {
+		zephyr,console = &cdc_acm_dbg;
+	};
+};
+
+&zephyr_udc0 {
+	cdc_acm_dbg: cdc_acm_dbg {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};

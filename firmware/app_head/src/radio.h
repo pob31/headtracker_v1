@@ -38,4 +38,13 @@ void htk_radio_listen(uint32_t window_ms);
  * Returns false when the queue is empty. */
 bool htk_radio_beacon_get(struct htk_beacon_rx *out);
 
+/* Bring-up diagnostics (cumulative). */
+struct htk_radio_debug {
+	uint32_t listens;        /* listen windows executed */
+	uint32_t cfg_fail;       /* PRX reconfigure/start failures */
+	uint32_t rx_events;      /* payloads seen by the RX handler (any type) */
+	uint32_t beacons_queued; /* beacons handed to the control thread */
+};
+void htk_radio_get_debug(struct htk_radio_debug *out);
+
 #endif /* APP_HEAD_RADIO_H */

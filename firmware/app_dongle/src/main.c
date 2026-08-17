@@ -10,6 +10,8 @@
  * is required (PROTOCOL.md §1.7). Beacons run whenever the dongle is
  * powered, which is what holds head units out of standby.
  */
+#include <stdio.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -29,6 +31,22 @@ static void stats_work_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
 	trackers_tick_1hz();
+
+	/* Bring-up diagnostics: beacon outcome counters as a LOG frame, so the
+	 * host can see radio health without a debug probe. Cheap enough to keep
+	 * until the air link is proven, then demote to on-request. */
+	struct radio_beacon_stats b;
+	uint8_t log_payload[HTK_MAX_PAYLOAD];
+	radio_get_beacon_stats(&b);
+	int n = snprintf((char *)log_payload + 1, sizeof(log_payload) - 1,
+			 "bcn a=%u s=%u sf=%u wf=%u to=%u pf=%u",
+			 b.attempts, b.sent, b.setup_fail, b.write_fail,
+			 b.tx_timeout, b.prx_fail);
+	if (n > 0) {
+		log_payload[0] = HTK_PKT_LOG;
+		usb_io_send_payload(log_payload,
+				    MIN((size_t)n + 1, sizeof(log_payload)));
+	}
 }
 static K_WORK_DEFINE(stats_work, stats_work_fn);
 

@@ -44,6 +44,7 @@ static struct k_spinlock pending_lock;
 
 static uint8_t beacon_seq;
 static uint32_t rx_queue_overruns;
+static struct radio_beacon_stats bcn_stats;
 
 static K_SEM_DEFINE(tx_done_sem, 0, 1);
 
@@ -157,6 +158,7 @@ static void beacon_work_fn(struct k_work *work)
 	 * twice + ~100 us on air); expected well under 1 ms, i.e. <1% of the
 	 * beacon period. If re-init proves too slow, cache the two configs or
 	 * use radio shorts — measure first. */
+	bcn_stats.attempts++;
 	esb_stop_rx();
 	esb_disable();
 
@@ -167,12 +169,18 @@ static void beacon_work_fn(struct k_work *work)
 		 * mode. VERIFY against NCS 3.3 esb_ptx sample. */
 		if (esb_write_payload(&tx) == 0) {
 			if (k_sem_take(&tx_done_sem, K_MSEC(10)) != 0) {
+				bcn_stats.tx_timeout++;
 				LOG_WRN("beacon TX completion timeout");
+			} else {
+				bcn_stats.sent++;
 			}
 		} else {
+			bcn_stats.write_fail++;
 			LOG_WRN("beacon write failed");
 		}
 		esb_disable();
+	} else {
+		bcn_stats.setup_fail++;
 	}
 
 	int err = esb_setup(ESB_MODE_PRX);
@@ -181,9 +189,15 @@ static void beacon_work_fn(struct k_work *work)
 		err = esb_start_rx();
 	}
 	if (err) {
+		bcn_stats.prx_fail++;
 		LOG_ERR("PRX restore failed (%d)", err);
 		leds_set_red(true);
 	}
+}
+
+void radio_get_beacon_stats(struct radio_beacon_stats *out)
+{
+	*out = bcn_stats; /* u32 snapshot races are harmless for diagnostics */
 }
 static K_WORK_DEFINE(beacon_work, beacon_work_fn);
 

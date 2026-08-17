@@ -26,6 +26,7 @@ K_MSGQ_DEFINE(beacon_q, sizeof(struct htk_beacon_rx), 8, 4);
 
 static const uint8_t base_addr[4] = HTK_ADDR_BASE;
 static bool in_ptx;
+static struct htk_radio_debug dbg;
 
 static void esb_handler(const struct esb_evt *event)
 {
@@ -42,6 +43,7 @@ static void esb_handler(const struct esb_evt *event)
 		break;
 	case ESB_EVENT_RX_RECEIVED:
 		while (esb_read_rx_payload(&p) == 0) {
+			dbg.rx_events++;
 			if (p.length < sizeof(struct htk_beacon_hdr) ||
 			    p.data[0] != HTK_PKT_BEACON) {
 				continue; /* unknown air traffic: skip */
@@ -50,7 +52,9 @@ static void esb_handler(const struct esb_evt *event)
 
 			b.len = MIN(p.length, sizeof(b.data));
 			memcpy(b.data, p.data, b.len);
-			(void)k_msgq_put(&beacon_q, &b, K_NO_WAIT);
+			if (k_msgq_put(&beacon_q, &b, K_NO_WAIT) == 0) {
+				dbg.beacons_queued++;
+			}
 		}
 		break;
 	}
@@ -182,6 +186,7 @@ void htk_radio_listen(uint32_t window_ms)
 	int err;
 
 	k_mutex_lock(&radio_lock, K_FOREVER);
+	dbg.listens++;
 
 	/* Let an in-flight packet leave the air (~180 us for 32 B at 2 Mbps)
 	 * before tearing the radio down.
@@ -201,6 +206,9 @@ void htk_radio_listen(uint32_t window_ms)
 			LOG_ERR("esb_start_rx: %d", err);
 		}
 	}
+	if (err) {
+		dbg.cfg_fail++;
+	}
 
 	if (!err) {
 		k_sleep(K_MSEC(window_ms));
@@ -219,4 +227,9 @@ void htk_radio_listen(uint32_t window_ms)
 bool htk_radio_beacon_get(struct htk_beacon_rx *out)
 {
 	return k_msgq_get(&beacon_q, out, K_NO_WAIT) == 0;
+}
+
+void htk_radio_get_debug(struct htk_radio_debug *out)
+{
+	*out = dbg;
 }

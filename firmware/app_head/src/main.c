@@ -18,6 +18,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
@@ -152,17 +153,70 @@ static int imu_set_odr(uint16_t hz)
 	return err;
 }
 
+/* The IMU sits on an always-on rail, so its state survives soft reboot and
+ * the lsm6dsl driver's boot-time init fails on a non-fresh chip (Zephyr
+ * issue #55892 class; observed as "Failed to initialize chip" -> -ENODEV on
+ * every warm boot). The driver exposes no reset, so: raw-I2C SW_RESET the
+ * chip, then re-run the driver's init with device_init(). */
+#define LSM6_REG_CTRL3_C 0x12u
+#define LSM6_SW_RESET    BIT(0)
+
+static int imu_force_reset(void)
+{
+	const struct device *bus =
+		DEVICE_DT_GET(DT_BUS(DT_NODELABEL(lsm6ds3tr_c)));
+	const uint16_t addr = DT_REG_ADDR(DT_NODELABEL(lsm6ds3tr_c));
+	uint8_t v;
+	int err;
+
+	if (!device_is_ready(bus)) {
+		return -ENODEV;
+	}
+
+	/* A mid-transaction reset can leave the sensor holding SDA; clocking
+	 * the bus out first makes the SW_RESET write reachable. */
+	(void)i2c_recover_bus(bus);
+
+	err = i2c_reg_write_byte(bus, addr, LSM6_REG_CTRL3_C, LSM6_SW_RESET);
+	if (err) {
+		LOG_WRN("IMU SW_RESET write failed: %d", err);
+		return err;
+	}
+
+	/* SW_RESET self-clears in ~50 us */
+	for (int i = 0; i < 100; i++) {
+		k_busy_wait(50);
+		err = i2c_reg_read_byte(bus, addr, LSM6_REG_CTRL3_C, &v);
+		if (err == 0 && (v & LSM6_SW_RESET) == 0) {
+			return 0;
+		}
+	}
+	return -ETIMEDOUT;
+}
+
 static int imu_init(void)
 {
+	/* Driver init is deferred (see boards overlay): the chip must be
+	 * SW_RESET to its cold-boot state BEFORE the driver's first init,
+	 * because the always-on rail preserves sensor state across MCU
+	 * resets and the driver chokes on a non-fresh chip. */
+	for (int attempt = 0; !device_is_ready(imu) && attempt < 3; attempt++) {
+		int err = imu_force_reset();
+
+		if (err) {
+			LOG_WRN("IMU reset failed (%d), try %d", err, attempt + 1);
+		}
+		k_sleep(K_MSEC(20));
+		err = device_init(imu);
+		if (err) {
+			LOG_WRN("IMU driver init: %d (try %d)", err, attempt + 1);
+			k_sleep(K_MSEC(50));
+		}
+	}
 	if (!device_is_ready(imu)) {
 		LOG_ERR("IMU not ready");
 		return -ENODEV;
 	}
-
-	/* IMU is on an always-on rail, so its state survives soft reboot
-	 * (Zephyr issue #55892 class); the lsm6dsl driver exposes no reset.
-	 * TODO: SW_RESET via direct register write (CTRL3_C bit 0) on the
-	 * I2C bus before the driver touches the device, then poll clear. */
 
 	int err = imu_set_odr(IMU_ODR_HZ);
 
@@ -354,10 +408,20 @@ static void handle_beacon(const struct htk_beacon_rx *b)
 
 static void send_tstatus(void)
 {
+	/* BRING-UP DEBUG: vbat_mV temporarily carries radio RX diagnostics
+	 * (no battery ADC yet, field reads 0 = unknown otherwise). Encoding:
+	 * high byte = listen-window count (bit7 forced if any cfg failure),
+	 * low byte = RX events seen. Revert once the beacon path is proven. */
+	struct htk_radio_debug rd;
+
+	htk_radio_get_debug(&rd);
+
 	struct htk_tstatus ts = {
 		.type = HTK_PKT_TSTATUS,
 		.id = my_id,
-		.vbat_mV = 0, /* TODO: battery ADC (XIAO BAT divider), 0 = unknown */
+		.vbat_mV = (uint16_t)((((rd.cfg_fail ? 0x80u : 0u) |
+					(rd.listens & 0x7Fu)) << 8) |
+				      (rd.rx_events & 0xFFu)),
 		.fw_major = HTK_FW_MAJOR,
 		.fw_minor = HTK_FW_MINOR,
 		.fw_patch = HTK_FW_PATCH,
@@ -446,6 +510,14 @@ int main(void)
 			heard = true; /* any beacon = a receiver is present */
 			handle_beacon(&b);
 		}
+
+		/* Bring-up diagnostics (visible on the debug_usb console build). */
+		struct htk_radio_debug rd;
+
+		htk_radio_get_debug(&rd);
+		LOG_INF("listen #%u: rx_events=%u beacons=%u cfg_fail=%u heard=%d",
+			rd.listens, rd.rx_events, rd.beacons_queued, rd.cfg_fail,
+			(int)heard);
 
 		int64_t now = k_uptime_get();
 

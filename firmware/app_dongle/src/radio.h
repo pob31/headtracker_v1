@@ -18,4 +18,15 @@ int radio_init(void);
  * kept (last-writer-wins, per PROTOCOL.md §2.3). Safe from any context. */
 void radio_set_pending_cmd(const uint8_t *payload, size_t len);
 
+/* Bring-up diagnostics: beacon TX outcome counters (cumulative). */
+struct radio_beacon_stats {
+	uint32_t attempts;    /* beacon work executions */
+	uint32_t sent;        /* TX_SUCCESS confirmed */
+	uint32_t setup_fail;  /* PTX reconfigure failed */
+	uint32_t write_fail;  /* esb_write_payload != 0 */
+	uint32_t tx_timeout;  /* no TX event within 10 ms */
+	uint32_t prx_fail;    /* PRX restore failed */
+};
+void radio_get_beacon_stats(struct radio_beacon_stats *out);
+
 #endif
