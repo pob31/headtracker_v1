@@ -154,6 +154,39 @@ TEST_CASE("bench sequence: pure physical motions read as pure angles, "
     }
 }
 
+TEST_CASE("KNOWN LIMITATION: mount azimuth cross-couples nod into roll/yaw")
+{
+    /* Mount azimuth (twist about the vertical) is unobservable from gravity:
+     * a single-pose boresight — and auto-level, which sees only gravity —
+     * cannot cancel it (3 constraints, 4 unknowns). Pure YAW motion still
+     * reads exactly (which is why this stayed invisible); a NOD under an
+     * azimuthal mount cross-couples by ~sin(azimuth). This test pins the
+     * documented behavior so a change in it is noticed, not discovered.
+     * The fix would be motion-based (nod calibration); v1 answers with
+     * mechanical keying of the clip. See PROTOCOL.md §1.6. */
+    const float az = 30 * kPi / 180;
+    const auto mount = from_axis_angle(0, 0, 1, az); /* pure azimuth */
+    htk::Recenterer r;
+    r.boresight(mount);
+
+    /* a pure 20° nod about the wearer's TRUE ear axis (world Y here) */
+    const auto nod = htk::multiply(from_axis_angle(0, 1, 0, 20 * kPi / 180),
+                                   mount);
+    const auto e = htk::to_euler(r.apply(nod));
+
+    /* yaw motion would read clean; the nod does not: */
+    CHECK(std::fabs(e.roll) > 8 * kPi / 180);   /* ~sin(30°)*20° ≈ 10° */
+    CHECK(e.pitch < 19 * kPi / 180);            /* pitch under-reads */
+
+    /* while pure yaw under the same mount stays exact: */
+    const auto turned = htk::multiply(from_axis_angle(0, 0, 1, 25 * kPi / 180),
+                                      mount);
+    const auto ey = htk::to_euler(r.apply(turned));
+    CHECK(ey.yaw == doctest::Approx(25 * kPi / 180).epsilon(1e-3));
+    CHECK(std::fabs(ey.pitch) < 1e-3f);
+    CHECK(std::fabs(ey.roll) < 1e-3f);
+}
+
 TEST_CASE("recenter composes on top of boresight")
 {
     const auto mount = from_axis_angle(1, 0, 0, 15 * kPi / 180);

@@ -48,6 +48,13 @@ std::unique_ptr<Transport> make_serial();
  * would see if the dongle were unplugged. */
 std::unique_ptr<Transport> make_file(double bytes_per_second = 0.0, bool loop = false);
 
+/* Wraps any transport and records every byte READ to `record_path` (the
+ * device->host stream only — exactly what --replay consumes later). The file
+ * is opened on open(), flushed per read so a killed process still leaves a
+ * complete capture. */
+std::unique_ptr<Transport> make_tee(std::unique_ptr<Transport> inner,
+                                    const std::string &record_path);
+
 /* In-memory transport for tests: `feed()` appends bytes for the reader to
  * consume, `written()` returns everything the client has sent. */
 class MemTransport : public Transport {

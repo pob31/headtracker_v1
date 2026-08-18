@@ -312,6 +312,79 @@ std::unique_ptr<Transport> make_file(double bytes_per_second, bool loop)
 }
 
 /* ===================================================================== */
+/* TeeTransport — record everything read, for capture datasets           */
+/* ===================================================================== */
+
+namespace {
+
+class TeeTransport : public Transport {
+public:
+    TeeTransport(std::unique_ptr<Transport> inner, std::string record_path)
+        : inner_(std::move(inner)), record_path_(std::move(record_path))
+    {
+    }
+
+    ~TeeTransport() override { close(); }
+
+    bool open(const std::string &target, std::string &err) override
+    {
+        if (!inner_->open(target, err)) {
+            return false;
+        }
+        rec_ = std::fopen(record_path_.c_str(), "wb");
+        if (!rec_) {
+            err = "could not open record file '" + record_path_ + "'";
+            inner_->close();
+            return false;
+        }
+        return true;
+    }
+
+    void close() override
+    {
+        inner_->close();
+        if (rec_) {
+            std::fclose(rec_);
+            rec_ = nullptr;
+        }
+    }
+
+    bool is_open() const override { return inner_->is_open(); }
+
+    int read(uint8_t *buf, size_t cap, int timeout_ms) override
+    {
+        const int n = inner_->read(buf, cap, timeout_ms);
+        if (n > 0 && rec_) {
+            std::fwrite(buf, 1, (size_t) n, rec_);
+            /* A capture is usually harvested by killing the process;
+             * per-read flush keeps the file complete at any instant. */
+            std::fflush(rec_);
+        }
+        return n;
+    }
+
+    bool write(const uint8_t *data, size_t len) override
+    {
+        /* Host->dongle commands are not part of a capture: replays feed a
+         * parser, and the parser only ever sees the device->host direction. */
+        return inner_->write(data, len);
+    }
+
+private:
+    std::unique_ptr<Transport> inner_;
+    std::string record_path_;
+    std::FILE *rec_ = nullptr;
+};
+
+} // namespace
+
+std::unique_ptr<Transport> make_tee(std::unique_ptr<Transport> inner,
+                                    const std::string &record_path)
+{
+    return std::unique_ptr<Transport>(new TeeTransport(std::move(inner), record_path));
+}
+
+/* ===================================================================== */
 /* SerialPort                                                            */
 /* ===================================================================== */
 

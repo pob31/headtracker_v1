@@ -15,6 +15,7 @@
  */
 #include "headtracker/client.hpp"
 #include "headtracker/orientation.hpp"
+#include "headtracker/stabilizer.hpp"
 #include "headtracker/transport.hpp"
 
 #include <algorithm>
@@ -46,6 +47,7 @@ constexpr float kRad2Deg = 57.29577951308232f;
 struct Options {
     std::string port;
     std::string replay;
+    std::string record;
     bool list = false;
     bool fast = false;
     bool loop = false;
@@ -70,7 +72,9 @@ void usage()
         "  --list                 list serial ports and exit\n"
         "  --port PATH            open a serial port (COM7, /dev/ttyACM0);\n"
         "                         omitted, the dongle is auto-discovered\n"
-        "  --replay FILE          replay an htgen capture instead ('-' = stdin)\n"
+        "  --replay FILE          replay a capture instead ('-' = stdin)\n"
+        "  --record FILE          tee the raw device stream to FILE while\n"
+        "                         monitoring (replayable with --replay)\n"
         "  --fast                 replay with no pacing\n"
         "  --loop                 restart the capture at EOF\n"
         "  --once                 run to the end / 10 s, print a summary, exit\n"
@@ -95,16 +99,16 @@ struct Latest {
     std::mutex mu;
     bool have = false;
     uint16_t id = 0;
-    htk::Quat raw;
     uint32_t seq = 0;
     uint8_t flags = 0;
     uint64_t count = 0;
 };
 
 Latest g_latest;
-htk::Recenterer g_ref;       /* touched only on the reader thread */
-std::mutex g_ref_mu;         /* ...except by key handling, so guard it */
-std::atomic<int> g_pending_ref { 0 }; /* 1 = recenter, 2 = boresight, 3 = clear */
+/* Per-tracker reference automation (auto-level, wear gate, tap->recenter).
+ * ONE tracker only: g_selected pins which id feeds it; 0 = first id seen. */
+htk::Stabilizer g_stab;
+std::atomic<uint16_t> g_selected { 0 };
 
 /* ---- portable single-key input (disabled when stdin is the data stream) ---- */
 class KeyReader {
@@ -200,6 +204,7 @@ int main(int argc, char **argv)
         else if (a == "--json")      { opt.json = true; }
         else if (a == "--port")      { opt.port = next("--port"); }
         else if (a == "--replay")    { opt.replay = next("--replay"); }
+        else if (a == "--record")    { opt.record = next("--record"); }
         else if (a == "--tracker")   { opt.select = parse_id(next("--tracker")); opt.have_select = true; }
         else if (a == "--identify")  { opt.identify = (int) parse_id(next("--identify")); }
         else if (a == "--reset")     { opt.reset_fusion = (int) parse_id(next("--reset")); }
@@ -231,20 +236,20 @@ int main(int argc, char **argv)
     htk::Client client;
 
     client.on_orient = [](const htk_orient &o) {
-        /* Reference changes are applied here, on the one thread that owns the
-         * Recenterer, rather than from the key handler. */
-        if (const int req = g_pending_ref.exchange(0)) {
-            std::lock_guard<std::mutex> lk(g_ref_mu);
-            const htk::Quat q = htk::quat_of(o);
-            if (req == 1)      { g_ref.recenter(q); }
-            else if (req == 2) { g_ref.boresight(q); }
-            else               { g_ref.reset(); }
+        /* Adopt the first tracker seen; the Stabilizer is per-tracker, so
+         * only the selected id feeds it. */
+        uint16_t want = g_selected.load(std::memory_order_relaxed);
+        if (want == 0) {
+            g_selected.compare_exchange_strong(want, o.id);
+            want = g_selected.load(std::memory_order_relaxed);
+        }
+        if (o.id == want) {
+            (void) g_stab.update(o); /* corrected pose read via status() */
         }
 
         std::lock_guard<std::mutex> lk(g_latest.mu);
         g_latest.have = true;
         g_latest.id = o.id;
-        g_latest.raw = htk::quat_of(o);
         g_latest.seq = o.seq;
         g_latest.flags = o.flags;
         ++g_latest.count;
@@ -275,6 +280,10 @@ int main(int argc, char **argv)
     } else {
         transport = htk::make_serial();
         target = opt.port;
+    }
+
+    if (!opt.record.empty()) {
+        transport = htk::make_tee(std::move(transport), opt.record);
     }
 
     htk::Client::Options copts;
@@ -324,35 +333,33 @@ int main(int argc, char **argv)
 
         /* Pick a tracker to display: the requested one, else the first seen. */
         uint16_t shown = opt.select;
-        if (!opt.have_select && !trackers.empty()) {
+        if (opt.have_select) {
+            g_selected.store(shown);
+        } else if (!trackers.empty()) {
             shown = trackers.front().id;
         }
 
-        htk::Quat raw;
-        bool have = false;
         uint64_t count = 0;
         uint8_t flags = 0;
         {
             std::lock_guard<std::mutex> lk(g_latest.mu);
-            have = g_latest.have && (trackers.empty() || g_latest.id == shown || !opt.have_select);
-            raw = g_latest.raw;
             count = g_latest.count;
             flags = g_latest.flags;
         }
 
-        htk::EulerZYX e { 0, 0, 0 };
-        if (have) {
-            std::lock_guard<std::mutex> lk(g_ref_mu);
-            e = htk::to_euler(g_ref.apply(raw));
-        }
+        const htk::StabilizerStatus st = g_stab.status();
+        const htk::EulerZYX e = htk::to_euler(st.q_out);
 
         if (opt.json) {
             std::printf("{\"state\":\"%s\",\"trackers\":%zu,\"frames_ok\":%llu,"
-                        "\"decode_errors\":%llu,\"yaw\":%.2f,\"pitch\":%.2f,\"roll\":%.2f}\n",
+                        "\"decode_errors\":%llu,\"yaw\":%.2f,\"pitch\":%.2f,\"roll\":%.2f,"
+                        "\"worn\":%s,\"rest\":%s,\"taps\":%u,\"tilt\":%.1f}\n",
                         htk::to_string(state), trackers.size(),
                         (unsigned long long) stats.frames_ok,
                         (unsigned long long) stats.decode_errors,
-                        e.yaw * kRad2Deg, e.pitch * kRad2Deg, e.roll * kRad2Deg);
+                        e.yaw * kRad2Deg, e.pitch * kRad2Deg, e.roll * kRad2Deg,
+                        st.worn ? "true" : "false", st.rest ? "true" : "false",
+                        st.taps, st.tilt_deg);
             std::fflush(stdout);
         } else if (!opt.once) {
             std::printf("\x1b[H\x1b[2J");
@@ -380,18 +387,23 @@ int main(int argc, char **argv)
                 std::printf("  (no trackers heard yet)\n");
             }
 
-            std::printf("\n  tracker %04X   yaw %+7.1f   pitch %+7.1f   roll %+7.1f   %s%s\n",
+            std::printf("\n  tracker %04X   yaw %+7.1f   pitch %+7.1f   roll %+7.1f   %s%s%s%s\n",
                         shown, e.yaw * kRad2Deg, e.pitch * kRad2Deg, e.roll * kRad2Deg,
                         (flags & HTK_ORIENT_BIAS_OK) ? "bias-ok " : "bias-converging ",
+                        (flags & HTK_ORIENT_REST) ? "REST " : "",
+                        st.worn ? "worn " : "",
                         (flags & HTK_ORIENT_SIM) ? "SIM" : "");
+            std::printf("  auto-level %s   tilt %.1f deg   conf %.2f   taps %u\n",
+                        st.level_ready ? "active" : "learning",
+                        st.tilt_deg, st.level_confidence, st.taps);
             std::printf("\n  r recenter   b boresight   z clear   i identify   q quit\n");
             std::fflush(stdout);
         }
 
         switch (keys.get()) {
-        case 'r': g_pending_ref.store(1); break;
-        case 'b': g_pending_ref.store(2); break;
-        case 'z': g_pending_ref.store(3); break;
+        case 'r': g_stab.request_recenter(); break;
+        case 'b': g_stab.request_boresight(); break;
+        case 'z': g_stab.request_clear(); break;
         case 'i': client.identify(shown); break;
         case 'q': case 3: goto done;
         default: break;

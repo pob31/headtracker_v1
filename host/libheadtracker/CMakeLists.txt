@@ -7,6 +7,7 @@ add_library(headtracker_client STATIC
   src/parser.cpp
   src/commands.cpp
   src/orientation.cpp
+  src/stabilizer.cpp
   src/transport.cpp
   src/client.cpp
   ${HTK_PROTO_DIR}/htk_crc16.c

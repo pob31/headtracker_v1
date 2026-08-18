@@ -54,6 +54,66 @@ Quat heading(const Quat &q)
     return { q.w * inv, 0.0f, 0.0f, q.z * inv };
 }
 
+float wrap_pi(float rad)
+{
+    constexpr float kPi = 3.14159265358979f;
+
+    if (!std::isfinite(rad)) {
+        return 0.0f;
+    }
+    while (rad > kPi) {
+        rad -= 2.0f * kPi;
+    }
+    while (rad < -kPi) {
+        rad += 2.0f * kPi;
+    }
+    return rad;
+}
+
+float heading_angle(const Quat &q)
+{
+    const float n2 = q.w * q.w + q.z * q.z;
+    if (!(std::isfinite(n2) && n2 > 1e-12f)) {
+        return 0.0f; /* gimbal-vertical or poisoned: heading undefined */
+    }
+    return wrap_pi(2.0f * std::atan2(q.z, q.w));
+}
+
+Quat yaw_quat(float rad)
+{
+    return { std::cos(rad * 0.5f), 0.0f, 0.0f, std::sin(rad * 0.5f) };
+}
+
+Vec3 gravity_body(const Quat &q)
+{
+    /* R(q)^T * (0,0,-1) = negated third row of R(q). Callers pass normalized
+     * quaternions (quat_of/normalized both sanitize), so no guard here. */
+    return {
+        -(2.0f * (q.x * q.z - q.w * q.y)),
+        -(2.0f * (q.y * q.z + q.w * q.x)),
+        -(1.0f - 2.0f * (q.x * q.x + q.y * q.y)),
+    };
+}
+
+Quat shortest_arc_to_down(const Vec3 &g)
+{
+    const float n2 = g.x * g.x + g.y * g.y + g.z * g.z;
+    if (!(std::isfinite(n2) && n2 > 1e-12f)) {
+        return {}; /* no usable gravity direction: identity */
+    }
+    const float inv = 1.0f / std::sqrt(n2);
+    const float ux = g.x * inv, uy = g.y * inv, uz = g.z * inv;
+
+    /* Half-angle construction of the rotation u -> (0,0,-1):
+     * w = 1 + u·(0,0,-1) = 1 - uz ; axis = u × (0,0,-1) = (-uy, ux, 0).
+     * The z-component is exactly zero: this IS the swing factor. */
+    if (1.0f - uz < 1e-6f) {
+        /* u ≈ +Z (mounted upside-down): 180° about X */
+        return { 0.0f, 1.0f, 0.0f, 0.0f };
+    }
+    return normalized({ 1.0f - uz, -uy, ux, 0.0f });
+}
+
 EulerZYX to_euler(const Quat &q)
 {
     EulerZYX e;
@@ -99,6 +159,31 @@ void Recenterer::recenter(const Quat &current)
      * rotation: its inverse composes on the LEFT. */
     const Quat corrected = apply(normalized(current));
     yaw_inv_ = multiply(conjugate(heading(corrected)), yaw_inv_);
+}
+
+float Recenterer::set_tilt(const Quat &bore_inv_new, const Quat &current)
+{
+    const Quat q_c = normalized(current);
+    const float phi_old = heading_angle(multiply(q_c, bore_inv_));
+    const float phi_new = heading_angle(multiply(q_c, bore_inv_new));
+    const float delta = wrap_pi(phi_new - phi_old);
+
+    bore_inv_ = bore_inv_new;
+    /* y_new = y_old ⊗ heading(qc⊗b_old) ⊗ conj(heading(qc⊗b_new)):
+     * pure yaws commute, so as an angle: ψ ← ψ − δ. Exact in the twist
+     * metric (Euler yaw may still move near gimbal poses — by design). */
+    set_yaw_angle(wrap_pi(yaw_angle() - delta));
+    return delta;
+}
+
+float Recenterer::yaw_angle() const
+{
+    return heading_angle(yaw_inv_);
+}
+
+void Recenterer::set_yaw_angle(float rad)
+{
+    yaw_inv_ = yaw_quat(rad);
 }
 
 Quat Recenterer::apply(const Quat &raw) const
