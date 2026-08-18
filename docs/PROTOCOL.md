@@ -1,6 +1,6 @@
 # Head Tracker Protocol Specification
 
-**Protocol version:** 1 · **Spec status:** draft v0.5 (frozen at milestone M6) · 2026-08-12
+**Protocol version:** 1 · **Spec status:** draft v0.6 (frozen at milestone M6) · 2026-08-18
 
 This document specifies two wire formats:
 
@@ -90,6 +90,11 @@ crc16_le := CRC-16/CCITT-FALSE over payload, appended little-endian
 - **Quaternion**: Hamilton convention, order **w, x, y, z**, unit-norm, representing the
   rotation from body frame to world frame. Yaw = rotation about world Z; suggested Euler
   extraction for display: intrinsic Z-Y'-X'' (yaw-pitch-roll).
+- **ORIENT yaw is NOT the integral of the RAW gyro stream.** The head unit's fusion
+  applies bias estimation and (when enabled) a slew-limited rest yaw-hold that
+  re-anchors the yaw origin while the unit is provably still (flag bit `REST`). A host
+  running its own filter on RAW data will legitimately disagree with ORIENT yaw by the
+  amount of cancelled drift.
 - Unknown packet types MUST be skipped without error (frame boundaries come from COBS, so
   skipping is always possible). This is the forward-compatibility mechanism.
 
@@ -110,8 +115,15 @@ crc16_le := CRC-16/CCITT-FALSE over payload, appended little-endian
 | 25 | flags | u8 | see below |
 
 flags: bit 0 `HW_FUSION` (0 = software VQF, 1 = LSM6DSV16X SFLP) · bit 1 `BIAS_OK`
-(gyro bias estimate converged) · bit 2 `SIM` (synthetic data, not from a sensor) ·
-bits 3–7 reserved, 0.
+(gyro bias estimate genuinely converged; hysteretic) · bit 2 `SIM` (synthetic data,
+not from a sensor) · bit 3 `REST` (the head unit's drift gate is armed: it considers
+itself at rest and, when its yaw-hold servo is enabled, is actively holding yaw — the
+unit's own gate, stricter than the raw fusion filter's) · bit 4 `TAP` (double-tap
+gesture: a **level** held for ~250 ms of frames so a lossy link cannot swallow it;
+hosts edge-detect, and after any stream gap MUST seed the previous-state from the
+first received sample — never assume 0, or a reconnect mid-hold fabricates a tap) ·
+bits 5–7 reserved, 0. REST and TAP were added additively per §1.9 — older clients
+mask them away.
 
 Sent continuously at each tracker's active rate (default ~208 Hz) whenever the tracker's
 mode includes quaternions. Streams from multiple trackers interleave on the USB pipe;
@@ -248,15 +260,33 @@ quaternion product, and the side matters:
 - **Composed** (boresight once per rig, recenter freely afterwards):
   `q' = y_ref⁻¹ ⊗ h⁻¹ ⊗ q ⊗ b_ref⁻¹ ⊗ h`, with `y_ref` maintained compositionally:
   each recenter left-multiplies the inverse heading of the currently corrected pose.
+- **KNOWN LIMITATION — mount azimuth**: a single-pose tare (and auto-level below,
+  which sees only gravity) cannot observe the mount's twist about the vertical
+  (3 constraints, 4 unknowns). Pure yaw motion still reads exactly, but a nod under an
+  azimuthally-twisted mount cross-couples into roll/yaw by ~sin(azimuth). "Exact for
+  all subsequent motion" above therefore holds iff the mount azimuth is zero — key the
+  clip mechanically so the sensor's X roughly faces forward. A motion-based (nod)
+  calibration could resolve it and is future work.
 - **Display note**: yaw/pitch/roll extraction (Z-Y'-X'') is inherently degenerate at
   pitch = ±90° (gimbal lock: yaw and roll collapse into one degree of freedom and the
   numbers jump, while the quaternion remains perfectly valid). Renderers MUST consume
   the quaternion; Euler angles are for human-readable display only.
 
-The reference library implements exactly this (`htk::Recenterer`); each application
-(or each machine in a future LAN-bridged cluster) keeps its own references. Sensor
-orientation origin is arbitrary and yaw drifts slowly (6DoF); re-running either
-procedure costs nothing to any other receiver.
+**Auto-level (recommended over manual boresight)**: the reference library's
+`htk::Stabilizer` estimates the mount's tilt continuously from the long-term average
+of body-frame gravity `g_s = q⁻¹ ⊗ (0,0,-1) ⊗ q` — provably invariant under every
+world-yaw manipulation (drift, recenter, the head unit's rest yaw-hold), so nothing
+yaw-related can poison it. Accumulation is gated on a wear detector (a worn head shows
+tilt micro-motion; a headphone parked on a desk is dead still and teaches nothing), and
+every tilt refinement re-anchors the yaw reference in the twist metric so the output
+never jumps. The double-tap gesture (TAP flag) then only ever needs to set *yaw* —
+safe from any posture, which is the point: headphones resting in odd positions must
+never corrupt the reference. Manual `boresight()` remains as a deliberate override.
+
+The reference library implements exactly this (`htk::Recenterer` + `htk::Stabilizer`);
+each application (or each machine in a future LAN-bridged cluster) keeps its own
+references. Sensor orientation origin is arbitrary and yaw drifts slowly (6DoF);
+re-running either procedure costs nothing to any other receiver.
 
 ### 1.7 Session behavior
 

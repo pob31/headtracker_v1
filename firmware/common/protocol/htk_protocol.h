@@ -55,10 +55,18 @@ extern "C" {
 #define HTK_PKT_BEACON       0x20u /* dongle -> all head units, downlink address */
 #define HTK_PKT_TSTATUS      0x21u /* head unit 1 Hz status, uplink address */
 
-/* ORIENT flags */
+/* ORIENT flags. Bits 5-7 remain reserved (0); consumers mask unknown bits
+ * (PROTOCOL.md §1.9) — REST and TAP were added additively, no version bump. */
 #define HTK_ORIENT_HW_FUSION (1u << 0)
 #define HTK_ORIENT_BIAS_OK   (1u << 1)
 #define HTK_ORIENT_SIM       (1u << 2)
+/* Head unit's drift gate is armed: it considers itself at rest and (when the
+ * yaw-hold servo is enabled) is actively holding its yaw output. */
+#define HTK_ORIENT_REST      (1u << 3)
+/* Double-tap gesture: a LEVEL held for ~250 ms of frames after the tap so a
+ * lossy link cannot swallow it. Hosts edge-detect; after any stream gap the
+ * previous-state must be seeded from the first sample, never assumed 0. */
+#define HTK_ORIENT_TAP       (1u << 4)
 
 /* STATUS flags */
 #define HTK_STATUS_SIM_ACTIVE (1u << 0)
