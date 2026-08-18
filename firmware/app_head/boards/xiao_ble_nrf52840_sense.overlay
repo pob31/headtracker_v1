@@ -7,10 +7,10 @@
  * (the onboard LSM6DS3TR-C sits on one of them; raising the other is
  * harmless). Second interrupt cell is the priority.
  *
- * VERIFY on hardware: confirm which bus hosts the lsm6ds3tr_c node in the
- * board DT (expected &i2c1, pins P0.07/P0.27, TWIM1 = IRQ 4; external Xiao
- * header I2C is &i2c0, TWIM0 = IRQ 3) and that these IRQ line numbers match
- * nrf52840.dtsi. Then check for radio CRC errors while streaming at 416 Hz.
+ * Verified from the generated DT: the lsm6ds3tr_c node lives on &i2c0
+ * (TWIM0 @ 0x40003000, IRQ 3). &i2c1 is raised too — harmless, and covers
+ * any future external-header I2C use. Still to check on hardware: radio CRC
+ * error rate while streaming at 416 Hz (IRQ priority interaction).
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */

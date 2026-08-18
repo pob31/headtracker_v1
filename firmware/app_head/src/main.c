@@ -28,6 +28,7 @@
 #include "htk_protocol.h"
 #include "htk_radio.h"
 #include "htk_fusion.h"
+#include "htk_tapdet.h"
 
 #include "leds.h"
 #include "radio.h"
@@ -55,10 +56,14 @@ struct imu_sample {
 	int16_t racc[3];
 };
 
-/* 1 slot: the fusion thread always sees the freshest sample; a slower
- * consumer loses samples instead of accumulating latency (never fuse in
- * the trigger context, never queue up staleness). */
-K_MSGQ_DEFINE(imu_msgq, sizeof(struct imu_sample), 1, 4);
+/* Shallow queue, depth 4: absorbs ordinary scheduling jitter so samples are
+ * not lost to a momentarily busy fusion thread — every silently dropped
+ * sample is a fusion under-integration (scale error on fast motion). The
+ * "latest wins" overflow policy below is retained purely as protection: a
+ * full queue evicts the OLDEST sample, never delays the freshest, and every
+ * eviction is counted. */
+K_MSGQ_DEFINE(imu_msgq, sizeof(struct imu_sample), 4, 4);
+static uint32_t imu_drops;
 
 static const struct device *const imu = DEVICE_DT_GET(DT_NODELABEL(lsm6ds3tr_c));
 
@@ -127,12 +132,13 @@ static void imu_drdy(const struct device *dev, const struct sensor_trigger *trig
 		s.racc[i] = clamp_i16(s.acc[i] * ACC_LSB_PER_MS2);
 	}
 
-	/* Latest wins: drop the unconsumed sample, never block DRDY. */
+	/* Latest wins: evict the oldest unconsumed sample, never block DRDY. */
 	if (k_msgq_put(&imu_msgq, &s, K_NO_WAIT) != 0) {
 		struct imu_sample stale;
 
 		(void)k_msgq_get(&imu_msgq, &stale, K_NO_WAIT);
 		(void)k_msgq_put(&imu_msgq, &s, K_NO_WAIT);
+		imu_drops++;
 	}
 }
 
@@ -250,13 +256,49 @@ static void fusion_thread(void *p1, void *p2, void *p3)
 	struct imu_sample s;
 	float q[4];
 	uint32_t decim = 0;
+	struct htk_tapdet tapdet;
+	int64_t tap_until_ms = 0;
+
+	/* True-ODR measurement: the LSM6DS3TR-C clocks its ODR from an internal
+	 * oscillator, so "416 Hz" can be off by a few percent — a systematic
+	 * fusion scale error (a 90 deg turn reading 87 deg, forever). Log-only
+	 * for now; the number decides whether a rate-corrected VQF is worth it. */
+	uint32_t odr_prev_t = 0;
+	uint64_t odr_sum_us = 0;
+	uint32_t odr_n = 0;
+	bool odr_have_prev = false;
+
+	htk_tapdet_init(&tapdet, (float)IMU_ODR_HZ, NULL);
 
 	for (;;) {
 		k_msgq_get(&imu_msgq, &s, K_FOREVER);
 
+		if (odr_have_prev) {
+			odr_sum_us += (uint32_t)(s.t_us - odr_prev_t);
+			if (++odr_n == 4096) {
+				/* centi-Hz without floats in the log path */
+				uint32_t chz = (uint32_t)(4096ull * 100000000ull /
+							  odr_sum_us);
+				LOG_INF("measured ODR %u.%02u Hz, drops %u",
+					chz / 100, chz % 100, imu_drops);
+				odr_sum_us = 0;
+				odr_n = 0;
+			}
+		}
+		odr_prev_t = s.t_us;
+		odr_have_prev = true;
+
+		/* Tap first: the gesture must be seen even if fusion is
+		 * mid-convergence, and it only reads |acc|. */
+		if (htk_tapdet_feed(&tapdet, s.t_us, s.acc)) {
+			tap_until_ms = k_uptime_get() + 250;
+			leds_tap();
+			LOG_INF("double tap");
+		}
+
 		/* Fuse every sample at full ODR — decimation applies only
 		 * to transmission, so the filter sees all the data. */
-		htk_fusion_update(s.gyr, s.acc, q);
+		htk_fusion_update(s.gyr, s.acc, s.t_us, q);
 
 		if (!atomic_get(&g_streaming)) {
 			decim = 0;
@@ -269,6 +311,17 @@ static void fusion_thread(void *p1, void *p2, void *p3)
 		decim = 0;
 
 		uint8_t mode = (uint8_t)atomic_get(&g_mode);
+		uint8_t flags = 0; /* HW_FUSION=0: software VQF */
+
+		if (htk_fusion_bias_ok()) {
+			flags |= HTK_ORIENT_BIAS_OK;
+		}
+		if (htk_fusion_rest()) {
+			flags |= HTK_ORIENT_REST;
+		}
+		if (k_uptime_get() < tap_until_ms) {
+			flags |= HTK_ORIENT_TAP;
+		}
 
 		if (mode == HTK_MODE_QUAT || mode == HTK_MODE_BOTH) {
 			struct htk_orient o = {
@@ -278,9 +331,7 @@ static void fusion_thread(void *p1, void *p2, void *p3)
 				.t_us = s.t_us,
 				.q_w = q[0], .q_x = q[1],
 				.q_y = q[2], .q_z = q[3],
-				/* HW_FUSION=0: software VQF */
-				.flags = htk_fusion_bias_ok() ?
-					 HTK_ORIENT_BIAS_OK : 0,
+				.flags = flags,
 			};
 
 			(void)htk_radio_send(&o, sizeof(o));
@@ -443,6 +494,7 @@ enum run_state {
 static void enter_active(void)
 {
 	(void)imu_set_odr(IMU_ODR_HZ);
+	htk_fusion_resume(); /* no-op at boot; restores bias after standby */
 	atomic_set(&g_streaming, 1);
 	leds_set_link(LEDS_LINK_STREAMING);
 	LOG_INF("ACTIVE");
@@ -451,6 +503,7 @@ static void enter_active(void)
 static void enter_standby(void)
 {
 	atomic_set(&g_streaming, 0);
+	htk_fusion_suspend(); /* save the converged gyro bias */
 	(void)imu_set_odr(0);
 	leds_set_link(LEDS_LINK_SEARCHING);
 	LOG_INF("STANDBY");

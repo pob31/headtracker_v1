@@ -21,8 +21,10 @@ if(HTK_WITH_FUSION)
   target_sources(app PRIVATE
     ${HTK_COMMON_DIR}/fusion/htk_fusion.cpp
     ${HTK_COMMON_DIR}/fusion/vqf/vqf.cpp
+    ${HTK_COMMON_DIR}/imu/htk_tapdet.c
   )
   zephyr_include_directories(${HTK_COMMON_DIR}/fusion)
+  zephyr_include_directories(${HTK_COMMON_DIR}/imu)
   # M4F: single-precision floats keep VQF entirely on the FPU.
   zephyr_compile_definitions(VQF_SINGLE_PRECISION)
 endif()

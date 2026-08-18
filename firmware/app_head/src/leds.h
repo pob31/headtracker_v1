@@ -5,6 +5,7 @@
  * amber slow blink   = no receiver heard (searching/standby)
  * red                = battery low (stub until battery ADC lands)
  * white solid 3 s    = IDENTIFY command
+ * white blip 200 ms  = double-tap acknowledged
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -22,5 +23,6 @@ int leds_init(void);
 void leds_set_link(enum leds_link link);
 void leds_set_low_batt(bool low);  /* TODO: drive from battery ADC */
 void leds_identify(void);          /* white for 3 s, then back to state */
+void leds_tap(void);               /* white blip 200 ms: tap acknowledged */
 
 #endif /* APP_HEAD_LEDS_H */

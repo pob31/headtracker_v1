@@ -24,6 +24,7 @@ static const struct gpio_dt_spec led_blue  = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gp
 #define TICK_MS       50
 #define CYCLE_TICKS   40  /* 2 s pattern period */
 #define IDENTIFY_TICKS (3000 / TICK_MS)
+#define TAP_TICKS     (200 / TICK_MS)
 
 static atomic_t link_state = ATOMIC_INIT(LEDS_LINK_SEARCHING);
 static atomic_t low_batt = ATOMIC_INIT(0);
@@ -48,7 +49,7 @@ static void led_tick(struct k_timer *timer)
 
 	if (atomic_get(&identify_ticks) > 0) {
 		atomic_dec(&identify_ticks);
-		set_rgb(1, 1, 1); /* white: IDENTIFY */
+		set_rgb(1, 1, 1); /* white: IDENTIFY (or tap blip) */
 		return;
 	}
 
@@ -102,4 +103,13 @@ void leds_set_low_batt(bool low)
 void leds_identify(void)
 {
 	atomic_set(&identify_ticks, IDENTIFY_TICKS);
+}
+
+void leds_tap(void)
+{
+	/* Shares the identify mechanism, shorter; an in-progress identify
+	 * is not cut short by a tap. */
+	if (atomic_get(&identify_ticks) < TAP_TICKS) {
+		atomic_set(&identify_ticks, TAP_TICKS);
+	}
 }
