@@ -29,6 +29,7 @@ static const struct gpio_dt_spec led_blue  = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gp
 static atomic_t link_state = ATOMIC_INIT(LEDS_LINK_SEARCHING);
 static atomic_t low_batt = ATOMIC_INIT(0);
 static atomic_t identify_ticks = ATOMIC_INIT(0);
+static atomic_t at_rest = ATOMIC_INIT(0);
 static uint32_t tick;
 
 static void set_rgb(int r, int g, int b)
@@ -61,7 +62,8 @@ static void led_tick(struct k_timer *timer)
 	}
 
 	if (atomic_get(&link_state) == LEDS_LINK_STREAMING) {
-		set_rgb(0, t < 1, 0);        /* green 50 ms every 2 s */
+		/* green blink in motion; cyan while the drift gate holds yaw */
+		set_rgb(0, t < 1, t < 1 && atomic_get(&at_rest));
 	} else {
 		int on = t < 5;              /* amber 250 ms every 2 s */
 		set_rgb(on, on, 0);
@@ -98,6 +100,11 @@ void leds_set_link(enum leds_link link)
 void leds_set_low_batt(bool low)
 {
 	atomic_set(&low_batt, low);
+}
+
+void leds_set_rest(bool rest)
+{
+	atomic_set(&at_rest, rest);
 }
 
 void leds_identify(void)

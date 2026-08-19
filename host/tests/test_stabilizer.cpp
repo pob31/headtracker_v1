@@ -376,15 +376,16 @@ TEST_CASE("tap edge detection: one event per hold, gap-start never fabricates")
     CHECK(events == 2);
 }
 
-TEST_CASE("tap default action recenters the yaw")
+TEST_CASE("tap default action recenters the yaw (worn and settled)")
 {
     htk::StabilizerConfig cfg = fast_cfg();
     cfg.level.enabled = false;
+    cfg.tap.min_worn_s = 0.2f;
     htk::Stabilizer stab(cfg);
     uint32_t t = 0;
 
     const Quat pose = htk::yaw_quat(70 * kD2R);
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 208; i++) { /* 1 s: worn + stable */
         stab.update(orient_of(pose, t, 0));
         t += kDt208;
     }
@@ -394,4 +395,32 @@ TEST_CASE("tap default action recenters the yaw")
     t += kDt208;
     const Quat out = stab.update(orient_of(pose, t, HTK_ORIENT_TAP));
     CHECK(std::fabs(htk::heading_angle(out)) < 1e-3f);
+}
+
+TEST_CASE("tap during a wear transition (donning) does NOT recenter")
+{
+    htk::StabilizerConfig cfg = fast_cfg();
+    cfg.level.enabled = false;
+    cfg.tap.min_worn_s = 2.0f; /* real default: settled wearers only */
+    int events = 0;
+    htk::Stabilizer stab(cfg);
+    stab.on_tap = [&] { events++; };
+    uint32_t t = 0;
+
+    const Quat pose = htk::yaw_quat(50 * kD2R);
+    /* only ~0.5 s of wear before the tap: still in the donning window */
+    for (int i = 0; i < 104; i++) {
+        stab.update(orient_of(pose, t, 0));
+        t += kDt208;
+    }
+    stab.update(orient_of(pose, t, HTK_ORIENT_TAP));
+    t += kDt208;
+    for (int i = 0; i < 52; i++) {
+        stab.update(orient_of(pose, t, HTK_ORIENT_TAP));
+        t += kDt208;
+    }
+
+    CHECK(events == 1); /* observability preserved... */
+    CHECK(std::fabs(htk::heading_angle(stab.status().q_out) - 50 * kD2R) <
+          1e-3f); /* ...but no action taken */
 }

@@ -65,6 +65,14 @@ struct WearConfig {
 struct TapConfig {
     bool tap_recenters = true;
     float refractory_s = 1.0f;     /* host-side, on top of the firmware's */
+    /* Tap ACTIONS honored only after the unit has been worn this long:
+     * donning headphones is a wear transition full of tap-like jostles. The
+     * tap is still counted and on_tap still fires (observability). */
+    float min_worn_s = 2.0f;
+    /* A tap mid-swing would set "front" to a millisecond of motion; defer
+     * the recenter until rotation is below this, with a timeout. */
+    float settle_max_deg_s = 30.0f;
+    float settle_timeout_s = 1.0f;
 };
 
 struct StabilizerConfig {
@@ -138,6 +146,10 @@ private:
     float worn_time_ = 0.0f;
     float still_time_ = 0.0f;
     bool worn_ = false;
+    float worn_stable_s_ = 0.0f;   /* time since worn_ became true */
+
+    /* tap-triggered recenter, deferred until the head settles */
+    float tap_settle_left_ = -1.0f; /* <0 = no pending tap recenter */
 
     /* auto-level */
     Vec3 u_acc_ {};                /* gravity direction EMA (unnormalized) */

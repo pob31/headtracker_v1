@@ -281,8 +281,43 @@ static void fusion_thread(void *p1, void *p2, void *p3)
 							  odr_sum_us);
 				LOG_INF("measured ODR %u.%02u Hz, drops %u",
 					chz / 100, chz % 100, imu_drops);
+
+				/* One-time rate correction: internal-oscillator
+				 * ODR error is a systematic fusion scale error
+				 * (measured 431.56 Hz on unit 1 = 3.7 %). */
+				static bool rate_corrected;
+
+				if (!rate_corrected &&
+				    (chz < 41392u || chz > 41808u)) {
+					htk_fusion_set_sample_rate(
+						(float)chz / 100.0f);
+					rate_corrected = true;
+					LOG_INF("fusion rate corrected to "
+						"%u.%02u Hz", chz / 100,
+						chz % 100);
+				}
 				odr_sum_us = 0;
 				odr_n = 0;
+
+				/* rest-gate diagnostics each window (~10 s):
+				 * which condition blocks arming, in milli-units
+				 * to keep floats out of the log path */
+				struct htk_fusion_debug fd;
+
+				htk_fusion_get_debug(&fd);
+				LOG_INF("fusion: sigma=%d bcmax=%d vert=%d "
+					"accdev=%d mdps/m; vqfrest=%u%% fail=%u "
+					"spk1=%u spk8=%u",
+					(int)(fd.sigma_dps * 1000.0f),
+					(int)(fd.bc_norm_max_dps * 1000.0f),
+					(int)(fd.vert_max_dps * 1000.0f),
+					(int)(fd.acc_dev_max * 1000.0f),
+					fd.vqf_rest_pct, fd.gate_fail_n,
+					fd.spikes_1dps, fd.spikes_8dps);
+				LOG_INF("coarse offset mdps: %d %d %d",
+					(int)(fd.coarse_dps[0] * 1000.0f),
+					(int)(fd.coarse_dps[1] * 1000.0f),
+					(int)(fd.coarse_dps[2] * 1000.0f));
 			}
 		}
 		odr_prev_t = s.t_us;
@@ -312,13 +347,15 @@ static void fusion_thread(void *p1, void *p2, void *p3)
 
 		uint8_t mode = (uint8_t)atomic_get(&g_mode);
 		uint8_t flags = 0; /* HW_FUSION=0: software VQF */
+		const bool rest = htk_fusion_rest();
 
 		if (htk_fusion_bias_ok()) {
 			flags |= HTK_ORIENT_BIAS_OK;
 		}
-		if (htk_fusion_rest()) {
+		if (rest) {
 			flags |= HTK_ORIENT_REST;
 		}
+		leds_set_rest(rest); /* streaming blink: green moving, cyan held */
 		if (k_uptime_get() < tap_until_ms) {
 			flags |= HTK_ORIENT_TAP;
 		}

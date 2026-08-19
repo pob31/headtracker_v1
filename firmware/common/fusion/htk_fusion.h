@@ -46,6 +46,28 @@ void htk_fusion_reset(void);
 void htk_fusion_suspend(void);
 void htk_fusion_resume(void);
 
+/* Bring-up diagnostics, accumulated since the previous call (1 Hz polling
+ * intended): why is/isn't the rest gate arming, and how converged is the
+ * bias. All angles in degrees/s. */
+struct htk_fusion_debug {
+	float sigma_dps;       /* current bias uncertainty */
+	float bc_norm_max_dps; /* peak bias-corrected gyro norm in window */
+	float vert_max_dps;    /* peak vertical component in window */
+	float acc_dev_max;     /* peak relative accel rest deviation */
+	uint16_t vqf_rest_pct; /* % of samples with VQF restDetected */
+	uint16_t gate_fail_n;  /* samples failing the instant conditions */
+	uint16_t spikes_1dps;  /* samples with bias-corrected norm > 1 deg/s */
+	uint16_t spikes_8dps;  /* ... > 8 deg/s (isolated ticks vs clusters) */
+	float coarse_dps[3];   /* boot-time zero-rate offset, deg/s per axis */
+};
+void htk_fusion_get_debug(struct htk_fusion_debug *out);
+
+/* One-time rate correction: the LSM6DS3TR-C clocks its ODR from an internal
+ * oscillator (measured 3.7% fast on the first unit). Rebuilds the filter
+ * with the true sample interval, carrying the full state (attitude, bias,
+ * covariances) across. Call from the fusion thread only. */
+void htk_fusion_set_sample_rate(float hz);
+
 #ifdef __cplusplus
 }
 #endif

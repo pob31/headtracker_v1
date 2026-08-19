@@ -1,7 +1,8 @@
 /*
  * leds.h — head unit LED state language (PRD F11).
  *
- * green short blink  = streaming (receiver heard)
+ * green short blink  = streaming (receiver heard), in motion
+ * cyan short blink   = streaming AND at rest (drift gate armed, yaw held)
  * amber slow blink   = no receiver heard (searching/standby)
  * red                = battery low (stub until battery ADC lands)
  * white solid 3 s    = IDENTIFY command
@@ -21,6 +22,7 @@ enum leds_link {
 
 int leds_init(void);
 void leds_set_link(enum leds_link link);
+void leds_set_rest(bool at_rest); /* streaming blink green->cyan while held */
 void leds_set_low_batt(bool low);  /* TODO: drive from battery ADC */
 void leds_identify(void);          /* white for 3 s, then back to state */
 void leds_tap(void);               /* white blip 200 ms: tap acknowledged */

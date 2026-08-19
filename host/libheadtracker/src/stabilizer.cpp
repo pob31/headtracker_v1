@@ -132,8 +132,11 @@ Quat Stabilizer::update(const htk_orient &o)
     if (tap_now && !tap_prev_ && tap_refractory_left_ <= 0.0f) {
         taps_++;
         tap_refractory_left_ = cfg_.tap.refractory_s;
-        if (cfg_.tap.tap_recenters) {
-            requests_.fetch_or(kReqRecenter);
+        /* Actions only for a settled wearer: donning headphones is a wear
+         * transition full of tap-like jostles. */
+        if (cfg_.tap.tap_recenters && worn_ &&
+            worn_stable_s_ >= cfg_.tap.min_worn_s) {
+            tap_settle_left_ = cfg_.tap.settle_timeout_s;
         }
         if (on_tap) {
             on_tap();
@@ -197,6 +200,7 @@ Quat Stabilizer::update(const htk_orient &o)
                 worn_ = false;
             }
         }
+        worn_stable_s_ = worn_ ? worn_stable_s_ + dt : 0.0f;
     }
 
     /* ---- auto-level ---- */
@@ -206,6 +210,18 @@ Quat Stabilizer::update(const htk_orient &o)
     }
     prev_q_ = q_raw;
     have_prev_q_ = true;
+
+    /* deferred tap-recenter: wait for the head to settle so "front" is not
+     * captured mid-swing; timeout applies it regardless */
+    if (tap_settle_left_ >= 0.0f) {
+        tap_settle_left_ -= dt;
+        if (rate < cfg_.tap.settle_max_deg_s * kDeg2Rad ||
+            tap_settle_left_ <= 0.0f) {
+            ref_.recenter(q_raw);
+            reseed_center(heading_angle(multiply(q_raw, ref_.tilt())));
+            tap_settle_left_ = -1.0f;
+        }
+    }
 
     if (cfg_.level.enabled && worn_ && dt > 0.0f &&
         rate < cfg_.level.reject_rate_deg_s * kDeg2Rad) {

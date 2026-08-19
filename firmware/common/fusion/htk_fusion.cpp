@@ -42,6 +42,10 @@
 #define REST_GYR_VERT_DPS  0.3f
 #define REST_ACC_DEV_MAX   0.5f
 
+/* Consecutive gate-violating samples that mean genuine motion (~7 ms at
+ * 416 Hz). Isolated spike samples shorter than this never drop the gate. */
+#define REST_BAD_RUN_DROP 3
+
 /* Post-convergence bias slew clamp, deg/s per second. A CONSTANT-rate slow
  * turn looks like rest to any deviation-from-low-pass detector once the LP
  * settles, and VQF's rest-bias KF then absorbs the whole turn as "bias"
@@ -63,6 +67,7 @@ static float g_nominal_dt;
 static bool g_bias_ok;
 static bool g_rest;
 static float g_rest_sustain_s;
+static uint32_t g_bad_run;
 
 static float g_psi_hold; /* left pure-yaw offset, rad */
 static float g_psi_ref;  /* yaw the servo holds toward, rad */
@@ -78,6 +83,36 @@ static vqf_real_t g_saved_sigma;
 
 static bool g_bias_latched;      /* first honest convergence reached */
 static vqf_real_t g_bias_prev[3]; /* last accepted (clamped) bias */
+
+static struct htk_fusion_debug g_dbg; /* window accumulators, see getter */
+static uint32_t g_dbg_samples;
+static uint32_t g_dbg_vqf_rest;
+
+/* Coarse zero-rate offset, captured over the first second after init/reset.
+ * The LSM6DS3TR-C's raw offset can be several deg/s (spec: +/-10), while
+ * VQF vetoes rest detection whenever any LOW-PASSED RAW component exceeds
+ * its 2 deg/s biasClip — an offset above that permanently blocks rest, the
+ * rest-bias KF never runs, and nothing converges (observed on unit 1).
+ * Subtracting a coarse boot-time mean keeps VQF's inputs inside every clip;
+ * VQF then estimates the residual properly. */
+static float g_coarse[3];
+static float g_coarse_acc[3];
+static float g_coarse_min[3], g_coarse_max[3];
+static uint32_t g_coarse_n;
+static uint32_t g_coarse_target;
+static bool g_coarse_done;
+
+/* Range within the capture window that betrays motion (a still sensor's
+ * 1 s peak-to-peak is well under 1 deg/s; handling is tens). */
+#define COARSE_RANGE_MAX_DPS  4.0f
+/* An accepted offset beyond this is not an offset (spec is +/-10 deg/s). */
+#define COARSE_ABS_MAX_DPS    15.0f
+
+static void coarse_restart(void)
+{
+    g_coarse_acc[0] = g_coarse_acc[1] = g_coarse_acc[2] = 0.0f;
+    g_coarse_n = 0;
+}
 
 static float wrap_pi(float a)
 {
@@ -116,15 +151,14 @@ void htk_fusion_init(float sample_hz)
 {
     g_nominal_dt = 1.0f / sample_hz;
     filt = new (static_cast<void *>(vqf_mem)) VQF(g_nominal_dt);
-    /* Align VQF's rest threshold with our gate (default is 2 deg/s): with
-     * the default, a sustained <2 deg/s turn does not break VQF's rest state
-     * and its rest-bias KF absorbs the whole turn into "bias" — a genuine
-     * slow head turn silently reads as zero. At 0.5 deg/s, any motion our
-     * gate would reject also breaks VQF's own rest, so rest-bias estimation
-     * can never eat motion. Breathing micro-motion is far below 0.5 deg/s
-     * deviation, so real rest still arms. */
-    filt->setRestDetectionThresholds(0.5f /* deg/s */, 0.5f /* m/s^2, the
-                                     VQF default — only the gyro tightens */);
+    /* VQF's rest thresholds stay at their stock values (2 deg/s, 0.5 m/s^2).
+     * Hardware showed isolated gyro spikes of 1-5 deg/s even at rest (desk
+     * vibration + occasional outlier samples); VQF's rest test is
+     * single-sample — any threshold below the spike floor means rest NEVER
+     * sustains its 1.5 s dwell and the rest-bias KF never runs. Strictness
+     * lives in OUR gate below, which out-votes isolated spikes; protection
+     * against VQF absorbing a slow genuine turn into bias lives in the bias
+     * slew clamp, which is independent of thresholds. */
     g_bias_ok = false;
     g_rest = false;
     g_rest_sustain_s = 0.0f;
@@ -134,6 +168,12 @@ void htk_fusion_init(float sample_hz)
     g_have_t = false;
     g_suspended = false;
     g_have_saved_bias = false;
+
+    g_coarse[0] = g_coarse[1] = g_coarse[2] = 0.0f;
+    g_coarse_acc[0] = g_coarse_acc[1] = g_coarse_acc[2] = 0.0f;
+    g_coarse_n = 0;
+    g_coarse_target = (uint32_t)sample_hz; /* ~1 s */
+    g_coarse_done = false;
 }
 
 static void update_bias_ok(vqf_real_t sigma_rad)
@@ -154,7 +194,53 @@ static void update_bias_ok(vqf_real_t sigma_rad)
 void htk_fusion_update(const float gyr[3], const float acc[3], uint32_t t_us,
 		       float q[4])
 {
-    vqf_real_t g[3] = { gyr[0], gyr[1], gyr[2] };
+    if (!g_coarse_done) {
+        /* Accumulate only across a CONSECUTIVE quiet second: the unit is
+         * routinely in-hand at boot (always, right after a flash), and a
+         * motion-polluted offset is worse than none. Watch the per-axis
+         * range within the window; motion restarts the window. */
+        if (g_coarse_n == 0) {
+            for (int i = 0; i < 3; i++) {
+                g_coarse_min[i] = g_coarse_max[i] = gyr[i];
+            }
+        }
+        bool moving = false;
+
+        for (int i = 0; i < 3; i++) {
+            g_coarse_min[i] = std::fmin(g_coarse_min[i], gyr[i]);
+            g_coarse_max[i] = std::fmax(g_coarse_max[i], gyr[i]);
+            if (g_coarse_max[i] - g_coarse_min[i] >
+                COARSE_RANGE_MAX_DPS * kDeg2Rad) {
+                moving = true;
+            }
+        }
+        if (moving) {
+            coarse_restart();
+        } else {
+            g_coarse_acc[0] += gyr[0];
+            g_coarse_acc[1] += gyr[1];
+            g_coarse_acc[2] += gyr[2];
+            if (++g_coarse_n >= g_coarse_target) {
+                const float c0 = g_coarse_acc[0] / (float)g_coarse_n;
+                const float c1 = g_coarse_acc[1] / (float)g_coarse_n;
+                const float c2 = g_coarse_acc[2] / (float)g_coarse_n;
+                const float lim = COARSE_ABS_MAX_DPS * kDeg2Rad;
+
+                if (std::fabs(c0) < lim && std::fabs(c1) < lim &&
+                    std::fabs(c2) < lim) {
+                    g_coarse[0] = c0;
+                    g_coarse[1] = c1;
+                    g_coarse[2] = c2;
+                    g_coarse_done = true;
+                } else {
+                    coarse_restart(); /* quiet but absurd: keep waiting */
+                }
+            }
+        }
+    }
+
+    vqf_real_t g[3] = { gyr[0] - g_coarse[0], gyr[1] - g_coarse[1],
+			gyr[2] - g_coarse[2] };
     vqf_real_t a[3] = { acc[0], acc[1], acc[2] };
 
     filt->updateGyr(g);
@@ -209,6 +295,7 @@ void htk_fusion_update(const float gyr[3], const float acc[3], uint32_t t_us,
     }
 
     /* ---- rest gate ---- */
+    /* g[] is already coarse-corrected; bias[] is VQF's residual estimate */
     const float bc[3] = { (float)(g[0] - bias[0]), (float)(g[1] - bias[1]),
 			  (float)(g[2] - bias[2]) };
     const float bc_norm =
@@ -229,23 +316,51 @@ void htk_fusion_update(const float gyr[3], const float acc[3], uint32_t t_us,
                             bc_norm < REST_GYR_NORM_DPS * kDeg2Rad &&
                             vert < REST_GYR_VERT_DPS * kDeg2Rad;
 
+    /* window diagnostics for htk_fusion_get_debug() */
+    g_dbg_samples++;
+    if (vqf_rest) {
+        g_dbg_vqf_rest++;
+    }
+    if (!instant_ok) {
+        g_dbg.gate_fail_n++;
+    }
+    if (bc_norm > 1.0f * kDeg2Rad) {
+        g_dbg.spikes_1dps++;
+        if (bc_norm > 8.0f * kDeg2Rad) {
+            g_dbg.spikes_8dps++;
+        }
+    }
+    g_dbg.bc_norm_max_dps = std::fmax(g_dbg.bc_norm_max_dps, bc_norm / kDeg2Rad);
+    g_dbg.vert_max_dps = std::fmax(g_dbg.vert_max_dps, vert / kDeg2Rad);
+    g_dbg.acc_dev_max = std::fmax(g_dbg.acc_dev_max, (float)rest_dev[1]);
+    g_dbg.sigma_dps = (float)sigma / kDeg2Rad;
+
     if (g_reseed) {
         g_rest_sustain_s = 0.0f;
         g_rest = false;
+        g_bad_run = 0;
     }
 
+    /* Motion is SUSTAINED; spikes are ISOLATED (hardware: 1-5 deg/s outlier
+     * samples even at rest, from desk vibration and occasional bad reads).
+     * Tolerate short violation runs; only a sustained run means motion. */
     if (!instant_ok) {
-        /* one failing sample drops the gate; re-arming needs the full dwell */
-        g_rest_sustain_s = 0.0f;
-        g_rest = false;
-    } else if (!g_rest) {
-        if ((float)rest_dev[1] < REST_ACC_DEV_MAX) {
-            g_rest_sustain_s += dt;
-            if (g_rest_sustain_s >= REST_SUSTAIN_S) {
-                g_rest = true;
-            }
-        } else {
+        g_bad_run++;
+        if (g_bad_run >= REST_BAD_RUN_DROP) {
             g_rest_sustain_s = 0.0f;
+            g_rest = false;
+        }
+    } else {
+        g_bad_run = 0;
+        if (!g_rest) {
+            if ((float)rest_dev[1] < REST_ACC_DEV_MAX) {
+                g_rest_sustain_s += dt;
+                if (g_rest_sustain_s >= REST_SUSTAIN_S) {
+                    g_rest = true;
+                }
+            } else {
+                g_rest_sustain_s = 0.0f;
+            }
         }
     }
 
@@ -306,6 +421,35 @@ bool htk_fusion_bias_ok(void)
     return g_bias_ok;
 }
 
+void htk_fusion_get_debug(struct htk_fusion_debug *out)
+{
+    *out = g_dbg;
+    out->coarse_dps[0] = g_coarse[0] / kDeg2Rad;
+    out->coarse_dps[1] = g_coarse[1] / kDeg2Rad;
+    out->coarse_dps[2] = g_coarse[2] / kDeg2Rad;
+    out->vqf_rest_pct = (uint16_t)(g_dbg_samples ?
+        (100u * g_dbg_vqf_rest) / g_dbg_samples : 0u);
+    /* restart the window */
+    g_dbg.bc_norm_max_dps = 0.0f;
+    g_dbg.vert_max_dps = 0.0f;
+    g_dbg.acc_dev_max = 0.0f;
+    g_dbg.gate_fail_n = 0;
+    g_dbg.spikes_1dps = 0;
+    g_dbg.spikes_8dps = 0;
+    g_dbg_samples = 0;
+    g_dbg_vqf_rest = 0;
+}
+
+void htk_fusion_set_sample_rate(float hz)
+{
+    const VQFState st = filt->getState();
+
+    g_nominal_dt = 1.0f / hz;
+    filt = new (static_cast<void *>(vqf_mem)) VQF(g_nominal_dt);
+    filt->setState(st);
+    /* thresholds are VQF defaults, nothing further to re-apply */
+}
+
 bool htk_fusion_rest(void)
 {
     return g_rest;
@@ -321,6 +465,12 @@ void htk_fusion_reset(void)
     g_reseed = true;
     g_have_saved_bias = false;
     g_bias_latched = false; /* full reset: convergence starts over */
+
+    /* re-capture the coarse offset too: RESET_FUSION is the recovery for
+     * "something is off", and the offset moves with temperature */
+    g_coarse_acc[0] = g_coarse_acc[1] = g_coarse_acc[2] = 0.0f;
+    g_coarse_n = 0;
+    g_coarse_done = false;
 }
 
 void htk_fusion_suspend(void)

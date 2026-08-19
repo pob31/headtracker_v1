@@ -41,10 +41,14 @@ struct htk_tapdet_cfg {
 	uint16_t refractory_ms;
 };
 
-/* Bench-tunable defaults (416 Hz, unit strapped to a headphone shell). */
+/* Bench-tuned defaults (416 Hz). spike_ths raised 8 -> 18 m/s^2 after
+ * hardware showed a brisk hand jerk (accelerate + decelerate ~100-300 ms
+ * apart) reads as a fake double tap at 8; sharp finger taps on the shell
+ * comfortably exceed 18. */
 #define HTK_TAPDET_CFG_DEFAULT                                                 \
 	{                                                                      \
-		.spike_ths = 8.0f, .rearm_ths = 3.0f, .baseline_tau_s = 0.04f, \
+		.spike_ths = 18.0f, .rearm_ths = 5.0f,                         \
+		.baseline_tau_s = 0.04f,                                       \
 		.shock_max_ms = 60, .gap_min_ms = 70, .gap_max_ms = 500,       \
 		.refractory_ms = 1000,                                         \
 	}
